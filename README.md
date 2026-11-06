@@ -2,7 +2,7 @@
 
 An AI document assistant for HR teams and schools. People upload their documents (handbooks, policies, guides) and ask questions about them, with answers that point back to the exact page.
 
-This repository is at **Milestone 1, Slice 0**: the foundation. It has registration, login and the database, with no documents or AI yet. The plan for Milestone 1 is in [docs/specs/milestone-1.md](docs/specs/milestone-1.md).
+This repository is at **Milestone 1, Slice 1**: the foundation plus workspaces. It has registration (which also creates a personal workspace), login and the database, with no documents or AI yet. The plan for Milestone 1 is in [docs/specs/milestone-1.md](docs/specs/milestone-1.md).
 
 ## Stack
 
@@ -33,7 +33,7 @@ Tests use a separate database (`pinpage_test`), created automatically and emptie
 
 | Method and path | What it does |
 | --- | --- |
-| POST /auth/register | Creates an account (201; 409 if the email is taken) |
+| POST /auth/register | Creates an account and its personal workspace, in one transaction (201; 409 if the email is taken) |
 | POST /auth/login | Returns a JWT |
 | GET /auth/me | Returns the logged in user |
 | GET /health | Health check |

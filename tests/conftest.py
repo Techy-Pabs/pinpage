@@ -20,25 +20,22 @@ TEST_DATABASE_URL = DEV_DATABASE_URL.set(database=f"{DEV_DATABASE_URL.database}_
 assert TEST_DATABASE_URL.database != DEV_DATABASE_URL.database
 
 
-def _create_test_database_if_missing() -> None:
+def create_database_if_missing(name: str) -> None:
     # Connect to PostgreSQL's built-in "postgres" database to create ours
     admin_engine = create_engine(
         DEV_DATABASE_URL.set(database="postgres"), isolation_level="AUTOCOMMIT"
     )
     with admin_engine.connect() as conn:
-        exists = conn.scalar(
-            text("SELECT 1 FROM pg_database WHERE datname = :name"),
-            {"name": TEST_DATABASE_URL.database},
-        )
+        exists = conn.scalar(text("SELECT 1 FROM pg_database WHERE datname = :name"), {"name": name})
         if not exists:
-            conn.execute(text(f'CREATE DATABASE "{TEST_DATABASE_URL.database}"'))
+            conn.execute(text(f'CREATE DATABASE "{name}"'))
     admin_engine.dispose()
 
 
 @pytest.fixture(scope="session")
 def engine():
     """Create the test database and its tables once per test run."""
-    _create_test_database_if_missing()
+    create_database_if_missing(TEST_DATABASE_URL.database)
     engine = create_engine(TEST_DATABASE_URL)
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)

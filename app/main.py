@@ -36,6 +36,17 @@ def validation_error_handler(request: Request, exc: RequestValidationError):
     return JSONResponse(status_code=422, content=body)
 
 
+@app.exception_handler(Exception)
+def unexpected_error_handler(request: Request, exc: Exception):
+    # Anything we didn't plan for. The details go to the server log (Starlette
+    # logs the traceback after this runs); the response never contains
+    # exception text, file paths or SQL.
+    return JSONResponse(
+        status_code=500,
+        content=error_body("internal_error", "Something went wrong on our side. Please try again."),
+    )
+
+
 app.include_router(auth.router)
 
 

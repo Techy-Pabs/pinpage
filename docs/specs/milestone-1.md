@@ -237,7 +237,7 @@ Seven slices, each on its own branch, each following the same loop: Claude Code 
 - [ ] No commit mentions Claude as an author or contributor
 - [ ] You can explain the background task, signed links, and why the ownership filter sits inside the query
 
-## Decisions from the Slice 0 review
+## Decisions from slice reviews
 
 Made on Nov 6, 2026, after reviewing this spec against ShopAssist. Where this section disagrees with anything above, this section wins.
 
@@ -266,3 +266,4 @@ Made on Nov 6, 2026, after reviewing this spec against ShopAssist. Where this se
 18. The workspace row is locked during the document limit check, so two uploads at once cannot pass it together.
 19. A failed upload must not leave an orphaned file in R2.
 20. Background tasks open their own database session; they never reuse the request's.
+21. When user deletion is added, it must delete the user's personal workspace explicitly, since the membership cascade does not remove it.
