@@ -1,0 +1,17 @@
+# Secrets
+.env
+
+# Claude Code: personal settings stay local (the shared .claude/settings.json is tracked)
+.claude/settings.local.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store

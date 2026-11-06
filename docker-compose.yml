@@ -1,0 +1,43 @@
+services:
+  api:
+    build:
+      context: .
+      target: production
+    env_file: .env
+    ports:
+      # 8001 on your machine, so it can run next to ShopAssist (which uses 8000)
+      - "8001:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Runs the test suite: docker compose run --rm --build tests
+  # The "test" profile keeps it from starting with a plain "docker compose up".
+  tests:
+    build:
+      context: .
+      target: test
+    profiles: ["test"]
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    # PostgreSQL 16 with the pgvector extension installed (see docker/db/Dockerfile).
+    # Milestone 1 doesn't use pgvector yet; embeddings arrive in Milestone 2.
+    build: docker/db
+    env_file: .env
+    ports:
+      # 5433 on your machine, so it can run next to ShopAssist's database (5432)
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:

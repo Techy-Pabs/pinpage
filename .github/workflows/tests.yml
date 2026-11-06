@@ -1,0 +1,23 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Placeholder values only. CI never sees real secrets.
+      - name: Create .env from the example
+        run: cp .env.example .env
+
+      - name: Run the tests in Docker
+        run: docker compose run --rm --build tests
+
+      - name: Stop the database
+        if: always()
+        run: docker compose down --volumes
