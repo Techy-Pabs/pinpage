@@ -2,7 +2,7 @@
 
 An AI document assistant for HR teams and schools. People upload their documents (handbooks, policies, guides) and ask questions about them, with answers that point back to the exact page.
 
-This repository is at **Milestone 1, Slice 1**: the foundation plus workspaces. It has registration (which also creates a personal workspace), login and the database, with no documents or AI yet. The plan for Milestone 1 is in [docs/specs/milestone-1.md](docs/specs/milestone-1.md).
+This repository is at **Milestone 1, Slice 2**: the foundation, workspaces and the file storage layer. It has registration (which also creates a personal workspace), login, the database and the code that stores files in Cloudflare R2, with no document endpoints or AI yet. The plan for Milestone 1 is in [docs/specs/milestone-1.md](docs/specs/milestone-1.md).
 
 ## Stack
 
@@ -13,9 +13,11 @@ FastAPI, SQLAlchemy 2, PostgreSQL 16 (with pgvector, for later milestones), Alem
 You need Docker.
 
 ```sh
-cp .env.example .env      # then change JWT_SECRET to a long random value
+cp .env.example .env      # then change JWT_SECRET and fill in your R2 values
 docker compose up --build
 ```
+
+The app refuses to start if `DATABASE_URL`, `JWT_SECRET` or any `R2_` value is missing or empty. It doesn't contact R2 at startup; the connection is made on first use.
 
 Migrations run automatically before the API starts. Then open http://localhost:8001/docs for Swagger.
 
@@ -28,6 +30,18 @@ docker compose run --rm --build tests
 ```
 
 Tests use a separate database (`pinpage_test`), created automatically and emptied before every test. GitHub Actions runs the same command on every push, using only the placeholder values in `.env.example`.
+
+No test contacts R2. The tests service replaces the R2 values from `.env` with placeholders (see `docker-compose.yml`), every test stores files in memory with `FakeStorage`, and any unstubbed call that reaches botocore's network layer fails the test.
+
+## Check the R2 connection (manual)
+
+Once your real R2 values are in `.env`, run this by hand to prove they work:
+
+```sh
+docker compose run --rm --no-deps --build api python scripts/check_storage.py
+```
+
+It saves one small file under `healthcheck/` in the bucket, reads it back, downloads it through a signed link, deletes it and checks it is gone, printing PASS or FAIL for each step. It never prints keys, links or secrets. It is not part of the automated tests.
 
 ## Endpoints so far
 
@@ -58,6 +72,9 @@ The change takes effect on the user's next request; no new login is needed.
 - Admin rights are read from the database on every request, not from the token.
 - All ids are UUIDs, so they cannot be guessed by counting.
 - Real secrets live only in `.env`, which is never committed.
+- The R2 bucket is private. Files will be reached only through signed links that expire after `SIGNED_URL_SECONDS` (5 minutes by default).
+- Storage keys are built only from UUIDs (`workspaces/{workspace_id}/documents/{document_id}.pdf`), never from a user's file name.
+- Storage errors reach callers as one safe message; logs record only the operation and the error code, never keys, links or secrets.
 
 ## Licence
 

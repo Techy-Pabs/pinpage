@@ -12,8 +12,10 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
 from app.db.base import Base
-from app.dependencies import get_db
+from app.dependencies import get_db, get_storage
 from app.main import app
+from app.services import storage as storage_module
+from app.services.storage import FakeStorage
 
 DEV_DATABASE_URL = make_url(settings.database_url)
 TEST_DATABASE_URL = DEV_DATABASE_URL.set(database=f"{DEV_DATABASE_URL.database}_test")
@@ -75,6 +77,33 @@ def client(session_factory):
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def fake_storage():
+    """Used automatically by every test: the app stores files in memory.
+
+    Replaced through FastAPI's dependency overrides, the same way as the
+    database, so the app itself has no test mode switch.
+    """
+    fake = FakeStorage()
+    app.dependency_overrides[get_storage] = lambda: fake
+    yield fake
+    app.dependency_overrides.pop(get_storage, None)
+
+
+@pytest.fixture(autouse=True)
+def no_network_for_storage(monkeypatch):
+    """Safety net: if any test reaches botocore's HTTP layer (a call to R2
+    that wasn't stubbed), fail loudly instead of sending it."""
+
+    def network_call(*args, **kwargs):
+        raise RuntimeError("A test tried to reach the network through botocore")
+
+    monkeypatch.setattr("botocore.httpsession.URLLib3Session.send", network_call)
+    storage_module.default_storage.cache_clear()
+    yield
+    storage_module.default_storage.cache_clear()
 
 
 @pytest.fixture

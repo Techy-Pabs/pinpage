@@ -1,11 +1,17 @@
-from pydantic import field_validator
+import re
+
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# An R2 account id goes into the endpoint's host name, so only letters,
+# digits and hyphens are allowed (no dots, slashes or "@" to redirect it)
+ACCOUNT_ID_PATTERN = re.compile(r"^[A-Za-z0-9-]+$")
 
 
 class Settings(BaseSettings):
     # Read from environment variables first, then from a .env file if present.
     # extra="ignore" skips variables we don't use yet (e.g. POSTGRES_PASSWORD,
-    # or the R2 and limit settings, which later slices start reading).
+    # or the limit settings, which later slices start reading).
     # hide_input_in_errors keeps values (which include secrets) out of the
     # error message when a setting is missing or invalid.
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
@@ -16,6 +22,18 @@ class Settings(BaseSettings):
 
     # How long a login token stays valid
     jwt_expire_minutes: int = 30
+
+    # Cloudflare R2, where the original PDFs are stored. All required.
+    r2_account_id: str
+    r2_access_key_id: str
+    # SecretStr prints as "**********" in logs, errors and repr(settings);
+    # the real value is only read where the R2 client is created
+    r2_secret_access_key: SecretStr
+    r2_bucket: str
+
+    # How long a signed link to an original PDF stays valid (at most 7 days,
+    # the longest a signed S3/R2 link can last)
+    signed_url_seconds: int = Field(default=300, gt=0, le=7 * 24 * 3600)
 
     @field_validator("database_url")
     @classmethod
@@ -38,6 +56,22 @@ class Settings(BaseSettings):
         # An empty secret would let anyone sign their own tokens
         if not value.strip():
             raise ValueError("JWT_SECRET is empty")
+        return value
+
+    @field_validator("r2_account_id", "r2_access_key_id", "r2_secret_access_key", "r2_bucket")
+    @classmethod
+    def r2_value_not_empty(cls, value, info):
+        # The message names the setting, never its value
+        raw = value.get_secret_value() if isinstance(value, SecretStr) else value
+        if not raw.strip():
+            raise ValueError(f"{info.field_name.upper()} is empty")
+        return value
+
+    @field_validator("r2_account_id")
+    @classmethod
+    def r2_account_id_is_safe(cls, value: str) -> str:
+        if not ACCOUNT_ID_PATTERN.fullmatch(value):
+            raise ValueError("R2_ACCOUNT_ID may only contain letters, digits and hyphens")
         return value
 
 

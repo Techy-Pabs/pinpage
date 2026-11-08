@@ -10,6 +10,7 @@ from app.core.errors import ApiError
 from app.core.security import decode_access_token
 from app.db.session import SessionLocal
 from app.models import User
+from app.services.storage import Storage, default_storage
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,15 @@ def get_db() -> Generator[Session, None, None]:
         yield db
     finally:
         db.close()
+
+
+def get_storage() -> Storage:
+    """Where original PDFs are kept: R2 in the app.
+
+    Tests replace it with FakeStorage through app.dependency_overrides,
+    so there is no test mode switch in the settings.
+    """
+    return default_storage()
 
 
 def unauthorized() -> ApiError:

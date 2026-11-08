@@ -29,7 +29,8 @@ CMD ["pytest"]
 # --- production: what the api service runs (no test tools or tests) ---
 FROM base AS production
 
-COPY scripts/start.sh ./scripts/start.sh
+# start.sh, and check_storage.py for the manual storage check
+COPY scripts ./scripts
 
 # Documents the default port; the real one comes from $PORT (see start.sh)
 EXPOSE 8000

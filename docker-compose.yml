@@ -19,6 +19,13 @@ services:
       target: test
     profiles: ["test"]
     env_file: .env
+    environment:
+      # Placeholders that replace the real R2 values from .env, so the real
+      # keys never reach the test container, even if a test had a bug
+      R2_ACCOUNT_ID: test-account
+      R2_ACCESS_KEY_ID: test-access-key-id
+      R2_SECRET_ACCESS_KEY: test-secret-access-key
+      R2_BUCKET: pinpage-test
     depends_on:
       db:
         condition: service_healthy
