@@ -18,6 +18,9 @@ from app.db.base import Base
 from tests.conftest import DEV_DATABASE_URL, create_database_if_missing
 
 ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
+USERS_REVISION = "bf4bd5376b01"
+WORKSPACES_REVISION = "0da6b09ad8ef"
+ALL_TABLES = {"users", "workspaces", "workspace_members", "documents"}
 MIGRATIONS_DATABASE = f"{DEV_DATABASE_URL.database}_migrations_test"
 assert MIGRATIONS_DATABASE != DEV_DATABASE_URL.database
 
@@ -55,7 +58,7 @@ def tables(engine) -> set[str]:
 def test_upgrade_matches_the_models(migrations_engine, alembic_config):
     command.upgrade(alembic_config, "head")
 
-    assert tables(migrations_engine) == {"users", "workspaces", "workspace_members"}
+    assert tables(migrations_engine) == ALL_TABLES
     with migrations_engine.connect() as conn:
         differences = compare_metadata(MigrationContext.configure(conn), Base.metadata)
     assert differences == []  # the migrations build exactly what the models describe
@@ -64,14 +67,17 @@ def test_upgrade_matches_the_models(migrations_engine, alembic_config):
 def test_upgrade_downgrade_and_upgrade_again(migrations_engine, alembic_config):
     command.upgrade(alembic_config, "head")
 
-    command.downgrade(alembic_config, "-1")  # undo only the workspaces migration
+    command.downgrade(alembic_config, "-1")  # undo only the documents migration
+    assert tables(migrations_engine) == {"users", "workspaces", "workspace_members"}
+
+    command.downgrade(alembic_config, "-1")  # then only the workspaces migration
     assert tables(migrations_engine) == {"users"}
 
     command.downgrade(alembic_config, "base")
     assert tables(migrations_engine) == set()
 
     command.upgrade(alembic_config, "head")
-    assert tables(migrations_engine) == {"users", "workspaces", "workspace_members"}
+    assert tables(migrations_engine) == ALL_TABLES
 
 
 def test_downgrading_workspaces_keeps_existing_users(migrations_engine, alembic_config):
@@ -82,7 +88,24 @@ def test_downgrading_workspaces_keeps_existing_users(migrations_engine, alembic_
             "VALUES (gen_random_uuid(), 'alice@example.com', 'x')"
         ))
 
-    command.downgrade(alembic_config, "-1")
+    command.downgrade(alembic_config, USERS_REVISION)
 
     with migrations_engine.connect() as conn:
         assert conn.scalar(text("SELECT email FROM users")) == "alice@example.com"
+
+
+def test_downgrading_documents_keeps_users_and_workspaces(migrations_engine, alembic_config):
+    command.upgrade(alembic_config, "head")
+    with migrations_engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO users (id, email, password_hash) "
+            "VALUES (gen_random_uuid(), 'alice@example.com', 'x')"
+        ))
+        conn.execute(text("INSERT INTO workspaces (id, name, kind) VALUES (gen_random_uuid(), 'Personal', 'personal')"))
+
+    command.downgrade(alembic_config, WORKSPACES_REVISION)
+
+    assert tables(migrations_engine) == {"users", "workspaces", "workspace_members"}
+    with migrations_engine.connect() as conn:
+        assert conn.scalar(text("SELECT count(*) FROM users")) == 1
+        assert conn.scalar(text("SELECT count(*) FROM workspaces")) == 1

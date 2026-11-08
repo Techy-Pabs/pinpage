@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.errors import DEFAULT_CODES, ApiError, error_body
-from app.routers import auth
+from app.routers import auth, documents
 
 # Show INFO logs from our own modules
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(name)s: %(message)s")
@@ -21,8 +21,11 @@ def http_error_handler(request: Request, exc: StarletteHTTPException):
     # (unknown path, wrong method) get a code from their status
     code = exc.code if isinstance(exc, ApiError) else DEFAULT_CODES.get(exc.status_code, "error")
     message = exc.detail if isinstance(exc.detail, str) else "Request failed"
+    extra = exc.extra if isinstance(exc, ApiError) else None
     return JSONResponse(
-        status_code=exc.status_code, content=error_body(code, message), headers=exc.headers
+        status_code=exc.status_code,
+        content=jsonable_encoder(error_body(code, message, extra)),
+        headers=exc.headers,
     )
 
 
@@ -48,6 +51,7 @@ def unexpected_error_handler(request: Request, exc: Exception):
 
 
 app.include_router(auth.router)
+app.include_router(documents.router)
 
 
 # Visiting the base URL opens the Swagger page. Hidden from the docs themselves.

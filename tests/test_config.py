@@ -19,7 +19,10 @@ VALID = {
 @pytest.fixture(autouse=True)
 def no_settings_from_environment(monkeypatch):
     """Each test sees only the values it passes, not the container's environment."""
-    for name in ["DATABASE_URL", "JWT_SECRET", "JWT_EXPIRE_MINUTES", "SIGNED_URL_SECONDS", *R2_VARIABLES]:
+    for name in [
+        "DATABASE_URL", "JWT_SECRET", "JWT_EXPIRE_MINUTES", "SIGNED_URL_SECONDS",
+        "MAX_UPLOAD_MB", "MAX_DOCUMENTS_PER_WORKSPACE", *R2_VARIABLES,
+    ]:
         monkeypatch.delenv(name, raising=False)
 
 
@@ -115,3 +118,35 @@ def test_empty_jwt_secret_is_rejected():
 
 def test_jwt_expire_minutes_defaults_to_30():
     assert make().jwt_expire_minutes == 30
+
+
+def test_upload_limits_default_to_20_mb_and_10_documents():
+    settings = make()
+
+    assert settings.max_upload_mb == 20
+    assert settings.max_upload_bytes == 20 * 1024 * 1024
+    assert settings.max_documents_per_workspace == 10
+
+
+def test_upload_limits_are_read_from_the_environment(monkeypatch):
+    monkeypatch.setenv("MAX_UPLOAD_MB", "5")
+    monkeypatch.setenv("MAX_DOCUMENTS_PER_WORKSPACE", "3")
+
+    settings = make()
+
+    assert settings.max_upload_bytes == 5 * 1024 * 1024
+    assert settings.max_documents_per_workspace == 3
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"max_upload_mb": 0},
+        {"max_upload_mb": -1},
+        {"max_upload_mb": 101},  # uploads are held in memory while checked
+        {"max_documents_per_workspace": 0},
+    ],
+)
+def test_impossible_upload_limits_refuse_to_start(changes):
+    with pytest.raises(ValidationError):
+        make(**changes)

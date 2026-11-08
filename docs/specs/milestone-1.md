@@ -267,3 +267,12 @@ Made on Nov 6, 2026, after reviewing this spec against ShopAssist. Where this se
 19. A failed upload must not leave an orphaned file in R2.
 20. Background tasks open their own database session; they never reuse the request's.
 21. When user deletion is added, it must delete the user's personal workspace explicitly, since the membership cascade does not remove it.
+
+**Upload (Slice 3)**
+
+22. A user with no workspace gets 404 `workspace_not_found`.
+23. A malformed upload form gets 422 `validation_error`.
+24. `documents.workspace_id` uses RESTRICT, so the delete code must remove the files and documents before a workspace.
+25. `documents.uploaded_by` uses SET NULL.
+26. `MAX_UPLOAD_MB` is capped at 100, because files are held in memory while they are checked.
+27. In Milestone 7, revisit holding the workspace lock during the storage save, since shared workspaces would make members wait on each other's uploads.

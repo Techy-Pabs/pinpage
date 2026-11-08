@@ -11,7 +11,7 @@ ACCOUNT_ID_PATTERN = re.compile(r"^[A-Za-z0-9-]+$")
 class Settings(BaseSettings):
     # Read from environment variables first, then from a .env file if present.
     # extra="ignore" skips variables we don't use yet (e.g. POSTGRES_PASSWORD,
-    # or the limit settings, which later slices start reading).
+    # or MAX_PAGES, which Slice 4 starts reading).
     # hide_input_in_errors keeps values (which include secrets) out of the
     # error message when a setting is missing or invalid.
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
@@ -34,6 +34,16 @@ class Settings(BaseSettings):
     # How long a signed link to an original PDF stays valid (at most 7 days,
     # the longest a signed S3/R2 link can last)
     signed_url_seconds: int = Field(default=300, gt=0, le=7 * 24 * 3600)
+
+    # Upload limits. An upload is held in memory while it is checked, so the
+    # file size is capped at 100 MB whatever the setting says.
+    max_upload_mb: int = Field(default=20, gt=0, le=100)
+    # Only processing and ready documents count; failed ones don't
+    max_documents_per_workspace: int = Field(default=10, gt=0)
+
+    @property
+    def max_upload_bytes(self) -> int:
+        return self.max_upload_mb * 1024 * 1024
 
     @field_validator("database_url")
     @classmethod
