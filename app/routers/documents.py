@@ -154,6 +154,17 @@ def upload_document(
     storage: Storage = Depends(get_storage),
     session_factory: sessionmaker = Depends(get_session_factory),
 ):
+    """Upload one PDF as a multipart form: file, and an optional title (the
+    file name without .pdf by default). Answers 202 at once with status
+    processing; the text is extracted in the background, so check
+    GET /documents/{id} until it is ready or failed.
+
+    Limits: MAX_UPLOAD_MB per file (413 file_too_large) and
+    MAX_DOCUMENTS_PER_WORKSPACE processing or ready documents (403
+    document_limit_reached). The file must really be a PDF (400 not_pdf), and
+    the same file can be in a workspace only once (409 duplicate_document,
+    with the existing document's id and status).
+    """
     # Step 2: lock the workspace row until this transaction ends, so a second
     # upload to the same workspace waits here and then sees this one's row
     workspace = get_personal_workspace(db, current_user.id, lock=True)

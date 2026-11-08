@@ -85,6 +85,7 @@ def root():
     return RedirectResponse(url="/docs")
 
 
-@app.get("/health")
+@app.get("/health", tags=["health"], summary="Health check")
 def health():
+    """Answers when the API is running. Doesn't contact the database or storage."""
     return {"status": "ok", "service": "pinpage"}

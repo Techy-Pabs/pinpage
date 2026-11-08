@@ -42,8 +42,12 @@ def violates_unique_email(error: IntegrityError) -> bool:
     return getattr(diag, "constraint_name", None) == EMAIL_UNIQUE_INDEX
 
 
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED, summary="Create an account"
+)
 def register(body: RegisterRequest, db: Session = Depends(get_db)):
+    """Creates the account, its personal workspace and the owner membership
+    together, or none of them. 409 email_taken if the email is registered."""
     if email_registered(db, body.email):
         raise email_taken()
 
@@ -69,8 +73,10 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
     return user
 
 
-@router.post("/login", response_model=TokenResponse)
+@router.post("/login", response_model=TokenResponse, summary="Log in")
 def login(body: LoginRequest, db: Session = Depends(get_db)):
+    """Returns a bearer token (a JWT) valid for JWT_EXPIRE_MINUTES. Use the
+    Authorize button with it. A wrong email or password gets the same 401."""
     user = db.scalar(select(User).where(User.email == body.email))
 
     if user is None:
@@ -82,6 +88,7 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
     return TokenResponse(access_token=create_access_token(user.id))
 
 
-@router.get("/me", response_model=UserResponse)
+@router.get("/me", response_model=UserResponse, summary="Your account")
 def me(current_user: User = Depends(get_current_user)):
+    """The logged in user."""
     return current_user
