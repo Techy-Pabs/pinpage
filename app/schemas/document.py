@@ -19,3 +19,15 @@ class DocumentResponse(BaseModel):
     error_message: str | None
     created_at: datetime
     processed_at: datetime | None
+
+
+class PageResponse(BaseModel):
+    page_number: int  # starts at 1
+    page_count: int  # pages in the whole document, for moving between pages
+    text: str
+    char_count: int
+
+
+class FileLinkResponse(BaseModel):
+    url: str  # a signed link to the original PDF; anyone holding it can open it until it expires
+    expires_in: int  # seconds

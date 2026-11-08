@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.config import settings
 from app.models import Document, DocumentPage
 from app.models.document import FAILURE_MESSAGES, STATUS_FAILED, STATUS_PROCESSING, STATUS_READY
-from app.services.storage import Storage
+from app.services.storage import Storage, StorageError
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +148,16 @@ def process_document(document_id: uuid.UUID, storage: Storage, session_factory: 
             return
 
         try:
-            texts = extract_pages(storage.read(key), settings.max_pages)
+            data = storage.read(key)
+        except StorageError:
+            # Storage is down, or the file is gone (the user may have just
+            # deleted the document; then the row is gone too and this is a no-op)
+            logger.warning("Could not read the file of document %s", document_id)
+            _finish_failed(session_factory, document_id, "unreadable")
+            return
+
+        try:
+            texts = extract_pages(data, settings.max_pages)
         except ProcessingFailed as failure:
             _finish_failed(session_factory, document_id, failure.code)
             return

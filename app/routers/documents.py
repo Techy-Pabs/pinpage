@@ -1,7 +1,8 @@
 import logging
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response, status
+from sqlalchemy import delete
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -9,8 +10,8 @@ from app.core.config import settings
 from app.core.errors import ApiError
 from app.dependencies import get_current_user, get_db, get_session_factory, get_storage
 from app.models import Document, User
-from app.models.document import STATUS_PROCESSING
-from app.schemas.document import DocumentResponse
+from app.models.document import STATUS_PROCESSING, STATUS_READY
+from app.schemas.document import DocumentResponse, FileLinkResponse, PageResponse
 from app.services import documents as docs
 from app.services.processing import process_document
 from app.services.storage import UNAVAILABLE_MESSAGE, Storage, StorageError, document_key
@@ -90,6 +91,24 @@ def duplicate_document(existing: Document | None) -> ApiError:
 
 def storage_error() -> ApiError:
     return ApiError(status.HTTP_502_BAD_GATEWAY, "storage_error", UNAVAILABLE_MESSAGE)
+
+
+def document_not_found() -> ApiError:
+    # The same answer for a missing document and someone else's: a 403 would
+    # confirm that the document exists
+    return ApiError(status.HTTP_404_NOT_FOUND, "document_not_found", "Document not found.")
+
+
+def document_not_ready() -> ApiError:
+    return ApiError(
+        status.HTTP_409_CONFLICT,
+        "document_not_ready",
+        "This document isn't ready yet. Check its status and try again once it is ready.",
+    )
+
+
+def page_not_found() -> ApiError:
+    return ApiError(status.HTTP_404_NOT_FOUND, "page_not_found", "This document has no such page.")
 
 
 # --- Reading the body -----------------------------------------------------------
@@ -200,3 +219,110 @@ def upload_document(
     # Step 6: runs after the response is sent, with its own sessions
     background_tasks.add_task(process_document, document.id, storage, session_factory)
     return document
+
+
+# --- The library ------------------------------------------------------------------------
+
+def visible_document(
+    document_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Document:
+    """The document in the path, if the current user may reach it.
+
+    The id is read as text, so a malformed id gets the same 404 as a
+    missing document instead of a 422 that reveals what ids look like.
+    """
+    try:
+        parsed = uuid.UUID(document_id)
+    except ValueError:
+        raise document_not_found() from None
+    document = docs.find_visible_document(db, current_user.id, parsed)
+    if document is None:
+        raise document_not_found()
+    return document
+
+
+@router.get("", response_model=list[DocumentResponse], summary="List your documents")
+def list_documents(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Every document in your workspace, newest first, in any status."""
+    return docs.list_visible_documents(db, current_user.id)
+
+
+@router.get("/{document_id}", response_model=DocumentResponse, summary="Get one document")
+def get_document(document: Document = Depends(visible_document)):
+    """One document with its status. Check this after uploading until the
+    status is ready or failed; a failed document has an error_code and a
+    message to show."""
+    return document
+
+
+@router.get("/{document_id}/pages/{page_number}", response_model=PageResponse, summary="Read one page")
+def get_page(
+    page_number: str,
+    document: Document = Depends(visible_document),
+    db: Session = Depends(get_db),
+):
+    """The extracted text of one page. Pages start at 1. Only ready
+    documents have pages (409 document_not_ready otherwise)."""
+    if document.status != STATUS_READY:
+        raise document_not_ready()
+    if not page_number.isdigit() or int(page_number) < 1:
+        raise page_not_found()
+    page = docs.find_page(db, document.id, int(page_number))
+    if page is None:
+        raise page_not_found()
+    return PageResponse(
+        page_number=page.page_number,
+        page_count=document.page_count,
+        text=page.text,
+        char_count=page.char_count,
+    )
+
+
+@router.get("/{document_id}/file", response_model=FileLinkResponse, summary="Get a link to the original PDF")
+def get_file_link(
+    document: Document = Depends(visible_document),
+    storage: Storage = Depends(get_storage),
+):
+    """A signed link to the original file, valid for SIGNED_URL_SECONDS
+    (5 minutes by default). Only for ready documents. The link is made
+    only after the membership check, and the bucket itself stays private."""
+    if document.status != STATUS_READY:
+        raise document_not_ready()
+    try:
+        url = storage.signed_url(document.storage_key, settings.signed_url_seconds)
+    except StorageError:
+        raise storage_error() from None
+    return FileLinkResponse(url=url, expires_in=settings.signed_url_seconds)
+
+
+@router.delete(
+    "/{document_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    summary="Delete a document",
+)
+def delete_document(
+    document: Document = Depends(visible_document),
+    db: Session = Depends(get_db),
+    storage: Storage = Depends(get_storage),
+):
+    """Deletes the original file, the document and its pages, in any status.
+
+    The file goes first: if storage fails, the answer is 502 storage_error
+    and the document stays, so you can try again. A file already missing
+    from storage counts as deleted.
+    """
+    try:
+        storage.delete(document.storage_key)
+    except StorageError:
+        db.rollback()
+        raise storage_error() from None
+
+    # The database deletes the pages with it (ON DELETE CASCADE). If a
+    # background task is still processing this document, it finds the row
+    # gone and drops its result.
+    db.execute(delete(Document).where(Document.id == document.id))
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

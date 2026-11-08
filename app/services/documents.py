@@ -7,11 +7,11 @@ import posixpath
 import unicodedata
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import Document
+from app.models import Document, DocumentPage, WorkspaceMember
 from app.models.document import COUNTED_STATUSES, WORKSPACE_SHA256_UNIQUE
 
 PDF_SIGNATURE = b"%PDF-"
@@ -81,3 +81,34 @@ def is_duplicate_violation(error: IntegrityError) -> bool:
     # psycopg reports which constraint rejected the row
     diag = getattr(error.orig, "diag", None)
     return getattr(diag, "constraint_name", None) == WORKSPACE_SHA256_UNIQUE
+
+
+def documents_visible_to(user_id: uuid.UUID) -> Select[tuple[Document]]:
+    """Every document in a workspace the user is a member of.
+
+    The membership check is a join inside the query, so a document the user
+    can't reach is never loaded at all; there is no separate ownership
+    check that could be forgotten. Every library route starts from here.
+    """
+    return select(Document).join(
+        WorkspaceMember, WorkspaceMember.workspace_id == Document.workspace_id
+    ).where(WorkspaceMember.user_id == user_id)
+
+
+def find_visible_document(db: Session, user_id: uuid.UUID, document_id: uuid.UUID) -> Document | None:
+    return db.scalar(documents_visible_to(user_id).where(Document.id == document_id))
+
+
+def list_visible_documents(db: Session, user_id: uuid.UUID) -> list[Document]:
+    # Newest first; the id breaks ties between documents uploaded in the same instant
+    return db.scalars(
+        documents_visible_to(user_id).order_by(Document.created_at.desc(), Document.id.desc())
+    ).all()
+
+
+def find_page(db: Session, document_id: uuid.UUID, page_number: int) -> DocumentPage | None:
+    return db.scalar(
+        select(DocumentPage).where(
+            DocumentPage.document_id == document_id, DocumentPage.page_number == page_number
+        )
+    )
