@@ -21,7 +21,8 @@ def no_settings_from_environment(monkeypatch):
     """Each test sees only the values it passes, not the container's environment."""
     for name in [
         "DATABASE_URL", "JWT_SECRET", "JWT_EXPIRE_MINUTES", "SIGNED_URL_SECONDS",
-        "MAX_UPLOAD_MB", "MAX_DOCUMENTS_PER_WORKSPACE", *R2_VARIABLES,
+        "MAX_UPLOAD_MB", "MAX_DOCUMENTS_PER_WORKSPACE", "MAX_PAGES", "PROCESSING_TIMEOUT_MINUTES",
+        *R2_VARIABLES,
     ]:
         monkeypatch.delenv(name, raising=False)
 
@@ -148,5 +149,18 @@ def test_upload_limits_are_read_from_the_environment(monkeypatch):
     ],
 )
 def test_impossible_upload_limits_refuse_to_start(changes):
+    with pytest.raises(ValidationError):
+        make(**changes)
+
+
+def test_processing_limits_default_to_100_pages_and_15_minutes():
+    settings = make()
+
+    assert settings.max_pages == 100
+    assert settings.processing_timeout_minutes == 15
+
+
+@pytest.mark.parametrize("changes", [{"max_pages": 0}, {"processing_timeout_minutes": 0}])
+def test_impossible_processing_limits_refuse_to_start(changes):
     with pytest.raises(ValidationError):
         make(**changes)

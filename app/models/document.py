@@ -9,6 +9,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     Uuid,
     func,
@@ -20,6 +21,16 @@ from app.db.base import Base
 STATUS_PROCESSING = "processing"
 STATUS_READY = "ready"
 STATUS_FAILED = "failed"
+
+# Why a document failed: a short fixed code, and the sentence shown to the
+# user. Never exception text.
+FAILURE_MESSAGES = {
+    "too_many_pages": "This document has more than {max_pages} pages. Upload a shorter file.",
+    "encrypted": "This PDF is password protected. Remove the password and upload it again.",
+    "no_text_layer": "This looks like a scanned document. Pinpage can't read scans yet.",
+    "unreadable": "We couldn't read this PDF. It may be damaged.",
+    "interrupted": "Processing was interrupted. Delete this document and upload it again.",
+}
 
 # Documents that count toward the per-workspace limit (failed ones don't)
 COUNTED_STATUSES = (STATUS_PROCESSING, STATUS_READY)
@@ -73,3 +84,22 @@ class Document(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class DocumentPage(Base):
+    """The extracted text of one page. Deleted with its document by the
+    database itself (ON DELETE CASCADE)."""
+
+    __tablename__ = "document_pages"
+    __table_args__ = (
+        CheckConstraint("page_number > 0", name="page_number_positive"),
+        CheckConstraint("char_count >= 0", name="char_count_not_negative"),
+        # One row per page; it also serves "the pages of this document"
+        UniqueConstraint("document_id", "page_number"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"))
+    page_number: Mapped[int] = mapped_column(Integer)  # starts at 1
+    text: Mapped[str] = mapped_column(Text)
+    char_count: Mapped[int] = mapped_column(Integer)

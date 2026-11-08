@@ -12,7 +12,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
 from app.db.base import Base
-from app.dependencies import get_db, get_storage
+from app.dependencies import get_db, get_session_factory, get_storage
 from app.main import app
 from app.services import storage as storage_module
 from app.services.storage import FakeStorage
@@ -74,6 +74,8 @@ def client(session_factory):
             session.close()
 
     app.dependency_overrides[get_db] = get_test_db
+    # Background tasks and the startup check make their own sessions
+    app.dependency_overrides[get_session_factory] = lambda: session_factory
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
@@ -127,3 +129,44 @@ def auth_headers(client, register):
         return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
     return _auth_headers
+
+
+@pytest.fixture
+def make_document(db, fake_storage):
+    """make_document(email, **changes) -> a Document saved straight to the
+    database (and its file to FakeStorage), in the user's personal workspace.
+    The user must already be registered."""
+    import hashlib
+    import uuid
+
+    from sqlalchemy import select
+
+    from app.models import Document, User
+    from app.models.document import STATUS_PROCESSING
+    from app.services.storage import document_key
+    from app.services.workspaces import get_personal_workspace
+
+    def _make_document(email="alice@example.com", data: bytes | None = None, **changes):
+        user = db.scalars(select(User).where(User.email == email)).one()
+        workspace = get_personal_workspace(db, user.id)
+        document_id = uuid.uuid4()
+        data = data if data is not None else b"%PDF-1.7 " + document_id.bytes
+        key = document_key(workspace.id, document_id)
+        values = dict(
+            id=document_id,
+            workspace_id=workspace.id,
+            uploaded_by=user.id,
+            title="Handbook",
+            original_filename="Handbook.pdf",
+            storage_key=key,
+            size_bytes=len(data),
+            sha256=hashlib.sha256(data).hexdigest(),
+            status=STATUS_PROCESSING,
+        )
+        document = Document(**{**values, **changes})
+        db.add(document)
+        db.commit()
+        fake_storage.save(key, data, "application/pdf")
+        return document
+
+    return _make_document

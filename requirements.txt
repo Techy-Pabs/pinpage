@@ -9,3 +9,5 @@ PyJWT==2.10.1
 email-validator==2.3.0
 boto3==1.43.125
 python-multipart==0.0.33
+pypdf==7.0.0
+cryptography==50.0.2

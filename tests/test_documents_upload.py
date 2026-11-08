@@ -38,6 +38,14 @@ def limits(monkeypatch):
     monkeypatch.setattr(settings, "max_documents_per_workspace", 10)
 
 
+@pytest.fixture(autouse=True)
+def no_processing(monkeypatch):
+    # These tests are about the upload itself; processing has its own tests.
+    # Without this, the small test PDFs would be processed (and fail as
+    # scans) right after each upload, changing what counts toward the limit.
+    monkeypatch.setattr(documents_router, "process_document", lambda *args: None)
+
+
 @pytest.fixture
 def upload(client):
     """upload(headers, data, filename, title=None, content_type) -> the response."""
@@ -112,13 +120,16 @@ def test_good_upload_returns_202_processing_and_stores_the_file(client, db, uplo
     assert document.sha256 == hashlib.sha256(pdf).hexdigest()
 
 
-def test_upload_schedules_processing_for_the_new_document(upload, auth_headers, monkeypatch):
+def test_upload_schedules_processing_for_the_new_document(upload, auth_headers, monkeypatch, fake_storage):
     scheduled = []
-    monkeypatch.setattr(documents_router, "process_document", scheduled.append)
+    monkeypatch.setattr(documents_router, "process_document", lambda *args: scheduled.append(args))
 
     response = upload(auth_headers())
 
-    assert scheduled == [uuid.UUID(response.json()["id"])]
+    [(document_id, storage, session_factory)] = scheduled
+    assert document_id == uuid.UUID(response.json()["id"])
+    assert storage is fake_storage  # the same storage the request used
+    assert session_factory is not None  # its own sessions, not the request's
 
 
 def test_title_given_by_the_user_is_used(upload, auth_headers):

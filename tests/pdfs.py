@@ -1,5 +1,10 @@
-"""Small PDFs built by hand for tests, so no real documents live in the repo
-and no PDF library is needed to make them."""
+"""PDFs made inside the tests, so no real documents live in the repo.
+
+make_pdf builds a tiny PDF by hand; the others use reportlab (a test-only
+package) for real text, and pypdf for encryption.
+"""
+
+import io
 
 
 def make_pdf(*page_texts: str) -> bytes:
@@ -38,3 +43,55 @@ def make_pdf(*page_texts: str) -> bytes:
         out += b"%010d 00000 n \n" % offsets[number]
     out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (size, xref_at)
     return bytes(out)
+
+
+# --- PDFs made with reportlab (real text, as a word processor would make) ---------
+
+def text_pdf(page_texts: list[str]) -> bytes:
+    """One page per text, each written as real, extractable text."""
+    from reportlab.pdfgen import canvas
+
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, invariant=1)  # invariant: the same input gives the same bytes
+    for text in page_texts:
+        y = 750
+        for line in text.split("\n"):
+            pdf.drawString(72, y, line)
+            y -= 16
+        pdf.showPage()
+    pdf.save()
+    return buffer.getvalue()
+
+
+def image_only_pdf(pages: int = 3) -> bytes:
+    """Pages with only drawings and no text, like a scan."""
+    from reportlab.pdfgen import canvas
+
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, invariant=1)
+    for i in range(pages):
+        pdf.rect(72, 300 + i * 10, 400, 300, fill=1)
+        pdf.showPage()
+    pdf.save()
+    return buffer.getvalue()
+
+
+def encrypted_pdf(user_password: str, algorithm: str = "AES-256") -> bytes:
+    """A text PDF encrypted with pypdf. An empty user_password means anyone
+    can open it; only the owner password (for editing) is set."""
+    from pypdf import PdfReader, PdfWriter
+
+    writer = PdfWriter(clone_from=PdfReader(io.BytesIO(text_pdf([LONG_TEXT, LONG_TEXT]))))
+    writer.encrypt(user_password=user_password, owner_password="owner-secret", algorithm=algorithm)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
+def damaged_pdf() -> bytes:
+    """Starts like a PDF, so the upload accepts it, but isn't one."""
+    return b"%PDF-1.7\n" + b"\x8f garbage that no PDF reader can make sense of \x00\xff" * 50
+
+
+# Long enough to count as a real text page (20 characters or more)
+LONG_TEXT = "This page has a real text layer with plenty of words."

@@ -3,11 +3,11 @@ import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Request, status
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import settings
 from app.core.errors import ApiError
-from app.dependencies import get_current_user, get_db, get_storage
+from app.dependencies import get_current_user, get_db, get_session_factory, get_storage
 from app.models import Document, User
 from app.models.document import STATUS_PROCESSING
 from app.schemas.document import DocumentResponse
@@ -133,6 +133,7 @@ def upload_document(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     storage: Storage = Depends(get_storage),
+    session_factory: sessionmaker = Depends(get_session_factory),
 ):
     # Step 2: lock the workspace row until this transaction ends, so a second
     # upload to the same workspace waits here and then sees this one's row
@@ -196,6 +197,6 @@ def upload_document(
 
     db.refresh(document)  # created_at and updated_at come from the database
 
-    # Step 6: runs after the response is sent (Slice 4 fills it in)
-    background_tasks.add_task(process_document, document.id)
+    # Step 6: runs after the response is sent, with its own sessions
+    background_tasks.add_task(process_document, document.id, storage, session_factory)
     return document

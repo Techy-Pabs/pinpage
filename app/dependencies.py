@@ -4,7 +4,7 @@ from collections.abc import Generator
 import jwt
 from fastapi import Depends, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.errors import ApiError
 from app.core.security import decode_access_token
@@ -26,6 +26,15 @@ def get_db() -> Generator[Session, None, None]:
         yield db
     finally:
         db.close()
+
+
+def get_session_factory() -> sessionmaker:
+    """Makes new database sessions, for work that outlives the request
+    (background tasks) or runs outside one (the startup check).
+
+    Tests replace it with a factory for the test database.
+    """
+    return SessionLocal
 
 
 def get_storage() -> Storage:

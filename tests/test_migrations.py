@@ -20,7 +20,8 @@ from tests.conftest import DEV_DATABASE_URL, create_database_if_missing
 ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
 USERS_REVISION = "bf4bd5376b01"
 WORKSPACES_REVISION = "0da6b09ad8ef"
-ALL_TABLES = {"users", "workspaces", "workspace_members", "documents"}
+DOCUMENTS_REVISION = "7c2e9a41d5b3"
+ALL_TABLES = {"users", "workspaces", "workspace_members", "documents", "document_pages"}
 MIGRATIONS_DATABASE = f"{DEV_DATABASE_URL.database}_migrations_test"
 assert MIGRATIONS_DATABASE != DEV_DATABASE_URL.database
 
@@ -67,7 +68,10 @@ def test_upgrade_matches_the_models(migrations_engine, alembic_config):
 def test_upgrade_downgrade_and_upgrade_again(migrations_engine, alembic_config):
     command.upgrade(alembic_config, "head")
 
-    command.downgrade(alembic_config, "-1")  # undo only the documents migration
+    command.downgrade(alembic_config, "-1")  # undo only the pages migration
+    assert tables(migrations_engine) == {"users", "workspaces", "workspace_members", "documents"}
+
+    command.downgrade(alembic_config, "-1")  # then only the documents migration
     assert tables(migrations_engine) == {"users", "workspaces", "workspace_members"}
 
     command.downgrade(alembic_config, "-1")  # then only the workspaces migration
@@ -109,3 +113,28 @@ def test_downgrading_documents_keeps_users_and_workspaces(migrations_engine, ale
     with migrations_engine.connect() as conn:
         assert conn.scalar(text("SELECT count(*) FROM users")) == 1
         assert conn.scalar(text("SELECT count(*) FROM workspaces")) == 1
+
+
+def test_downgrading_pages_keeps_documents(migrations_engine, alembic_config):
+    command.upgrade(alembic_config, "head")
+    with migrations_engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO users (id, email, password_hash) VALUES (gen_random_uuid(), 'alice@example.com', 'x')"
+        ))
+        workspace_id = conn.scalar(text(
+            "INSERT INTO workspaces (id, name, kind) VALUES (gen_random_uuid(), 'Personal', 'personal') RETURNING id"
+        ))
+        conn.execute(
+            text(
+                "INSERT INTO documents (id, workspace_id, title, original_filename, storage_key, "
+                "size_bytes, sha256, status) VALUES (gen_random_uuid(), :w, 't', 't.pdf', 'k', 1, "
+                "repeat('a', 64), 'processing')"
+            ),
+            {"w": workspace_id},
+        )
+
+    command.downgrade(alembic_config, DOCUMENTS_REVISION)
+
+    assert "document_pages" not in tables(migrations_engine)
+    with migrations_engine.connect() as conn:
+        assert conn.scalar(text("SELECT count(*) FROM documents")) == 1

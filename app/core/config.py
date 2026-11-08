@@ -10,8 +10,8 @@ ACCOUNT_ID_PATTERN = re.compile(r"^[A-Za-z0-9-]+$")
 
 class Settings(BaseSettings):
     # Read from environment variables first, then from a .env file if present.
-    # extra="ignore" skips variables we don't use yet (e.g. POSTGRES_PASSWORD,
-    # or MAX_PAGES, which Slice 4 starts reading).
+    # extra="ignore" skips variables the app doesn't use (e.g. POSTGRES_PASSWORD,
+    # which only the database container reads).
     # hide_input_in_errors keeps values (which include secrets) out of the
     # error message when a setting is missing or invalid.
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     max_upload_mb: int = Field(default=20, gt=0, le=100)
     # Only processing and ready documents count; failed ones don't
     max_documents_per_workspace: int = Field(default=10, gt=0)
+
+    # Processing limits. A longer document fails with too_many_pages; one still
+    # processing after the timeout is marked interrupted when the app starts.
+    max_pages: int = Field(default=100, gt=0)
+    processing_timeout_minutes: int = Field(default=15, gt=0)
 
     @property
     def max_upload_bytes(self) -> int:
