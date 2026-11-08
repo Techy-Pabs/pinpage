@@ -12,7 +12,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
 from app.db.base import Base
-from app.dependencies import get_db, get_session_factory, get_storage
+from app.dependencies import get_db, get_storage
 from app.main import app
 from app.services import storage as storage_module
 from app.services.storage import FakeStorage
@@ -63,7 +63,7 @@ def db(session_factory):
 
 
 @pytest.fixture
-def client(session_factory):
+def client(session_factory, monkeypatch):
     """A TestClient whose requests use the test database."""
 
     def get_test_db():
@@ -74,8 +74,9 @@ def client(session_factory):
             session.close()
 
     app.dependency_overrides[get_db] = get_test_db
-    # Background tasks and the startup check make their own sessions
-    app.dependency_overrides[get_session_factory] = lambda: session_factory
+    # Background tasks and the startup check make their own sessions, from the
+    # factory on app.state; monkeypatch puts the app's own back afterwards
+    monkeypatch.setattr(app.state, "session_factory", session_factory)
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()

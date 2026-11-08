@@ -28,13 +28,12 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
-def get_session_factory() -> sessionmaker:
+def get_session_factory(request: Request) -> sessionmaker:
     """Makes new database sessions, for work that outlives the request
-    (background tasks) or runs outside one (the startup check).
-
-    Tests replace it with a factory for the test database.
+    (background tasks). The app keeps it on app.state, set when the app is
+    created, and the startup check uses the same one; tests replace it there.
     """
-    return SessionLocal
+    return request.app.state.session_factory
 
 
 def get_storage() -> Storage:

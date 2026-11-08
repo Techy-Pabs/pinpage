@@ -59,8 +59,8 @@ A document in a response has: `id`, `title`, `original_filename`, `size_bytes`, 
 | `too_many_pages` | More than `MAX_PAGES` pages |
 | `encrypted` | Needs a password to open (a PDF that opens with an empty password is read normally) |
 | `no_text_layer` | At least 80% of pages have fewer than 20 characters: probably a scan |
-| `unreadable` | The PDF is damaged, or the file couldn't be read from storage |
-| `interrupted` | Still processing `PROCESSING_TIMEOUT_MINUTES` after upload, e.g. because the server restarted. Checked when the app starts |
+| `unreadable` | The PDF is damaged: pypdf can't open it |
+| `interrupted` | The file couldn't be read from storage, or the document was still processing `PROCESSING_TIMEOUT_MINUTES` after upload (e.g. because the server restarted; checked when the app starts) |
 
 A failed document keeps no pages, and its `error_message` is always a sentence written by us, never exception text. Delete it and upload the file again.
 

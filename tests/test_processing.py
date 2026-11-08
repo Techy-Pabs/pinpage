@@ -13,6 +13,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.core.config import settings
+from app.dependencies import get_session_factory
 from app.main import app
 from app.models import Document, DocumentPage
 from app.models.document import STATUS_FAILED, STATUS_PROCESSING, STATUS_READY
@@ -193,7 +194,7 @@ def test_failure_deletes_pages_already_saved(db, register, make_document, sessio
 
 
 @pytest.mark.parametrize("problem", ["missing-file", "storage-down"])
-def test_storage_problems_fail_as_unreadable(db, register, make_document, session_factory, fake_storage, problem):
+def test_storage_problems_fail_as_interrupted(db, register, make_document, session_factory, fake_storage, problem):
     register()
     document = make_document(data=text_pdf([LONG_TEXT]))
     if problem == "missing-file":
@@ -204,7 +205,8 @@ def test_storage_problems_fail_as_unreadable(db, register, make_document, sessio
     process_document(document.id, fake_storage, session_factory)
 
     document = reload(db, document.id)
-    assert document.status == STATUS_FAILED and document.error_code == "unreadable"
+    assert document.status == STATUS_FAILED and document.error_code == "interrupted"
+    assert document.error_message == MESSAGES["interrupted"]
 
 
 def test_database_failure_while_saving_fails_the_document_and_logs_no_text(
@@ -320,8 +322,16 @@ def test_stuck_documents_are_marked_interrupted(db, register, make_document, ses
 def test_stuck_check_runs_when_the_app_starts(db, client, register, make_document):
     register()
     stuck = make_aged(db, make_document, minutes_ago=30)
+    assert app.dependency_overrides.get(get_session_factory) is None  # app.state is the only switch
 
-    with TestClient(app):  # starting the app runs the check
+    with TestClient(app):  # starting the app runs the check, with app.state's factory
         pass
 
     assert reload(db, stuck.id).error_code == "interrupted"
+
+
+def test_app_makes_its_sessions_from_session_local_by_default():
+    # Outside the client fixture, app.state holds the real factory
+    from app.db.session import SessionLocal
+
+    assert app.state.session_factory is SessionLocal

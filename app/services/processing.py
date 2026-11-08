@@ -153,7 +153,8 @@ def process_document(document_id: uuid.UUID, storage: Storage, session_factory: 
             # Storage is down, or the file is gone (the user may have just
             # deleted the document; then the row is gone too and this is a no-op)
             logger.warning("Could not read the file of document %s", document_id)
-            _finish_failed(session_factory, document_id, "unreadable")
+            # interrupted, not unreadable: the file itself may be fine
+            _finish_failed(session_factory, document_id, "interrupted")
             return
 
         try:

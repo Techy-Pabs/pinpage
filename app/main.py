@@ -9,7 +9,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.config import settings
 from app.core.errors import DEFAULT_CODES, ApiError, error_body
-from app.dependencies import get_session_factory
+from app.db.session import SessionLocal
 from app.routers import auth, documents
 from app.services.processing import mark_stuck_documents
 
@@ -21,11 +21,10 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Runs once when the app starts. It uses the same session factory as the
-    # routes, so a test's override applies here too.
-    session_factory = app.dependency_overrides.get(get_session_factory, get_session_factory)()
+    # Runs once when the app starts, with the session factory kept on
+    # app.state (see below), the same one background tasks get
     try:
-        mark_stuck_documents(session_factory, settings.processing_timeout_minutes)
+        mark_stuck_documents(app.state.session_factory, settings.processing_timeout_minutes)
     except Exception as error:
         # A housekeeping step: log it and start anyway
         logger.error("Startup check for stuck documents failed (%s)", type(error).__name__)
@@ -38,6 +37,10 @@ app = FastAPI(
     "and only its members can reach it.",
     lifespan=lifespan,
 )
+
+# Makes database sessions for work outside a request: the startup check and
+# background tasks. Tests replace it with a factory for the test database.
+app.state.session_factory = SessionLocal
 
 
 @app.exception_handler(StarletteHTTPException)

@@ -276,3 +276,9 @@ Made on Nov 6, 2026, after reviewing this spec against ShopAssist. Where this se
 25. `documents.uploaded_by` uses SET NULL.
 26. `MAX_UPLOAD_MB` is capped at 100, because files are held in memory while they are checked.
 27. In Milestone 7, revisit holding the workspace lock during the storage save, since shared workspaces would make members wait on each other's uploads.
+
+**Extraction and library (Slices 4 to 6)**
+
+28. Signed links contain the storage key inside the URL. This is accepted because only the owner receives the link and it expires after `SIGNED_URL_SECONDS`.
+29. A storage error during processing (an outage or a missing file) ends as failed with `interrupted`. `unreadable` is kept for files pypdf cannot open.
+30. In Milestone 4, add a time limit on PDF processing, so a malicious file cannot run indefinitely.
