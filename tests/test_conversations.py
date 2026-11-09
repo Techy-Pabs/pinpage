@@ -158,6 +158,7 @@ def test_other_users_get_404_on_your_conversations_for_every_endpoint(client, db
     attempts = {
         "get": client.get(f"/conversations/{conversation['id']}", headers=bob),
         "delete": client.delete(f"/conversations/{conversation['id']}", headers=bob),
+        "ask": client.post(f"/conversations/{conversation['id']}/messages", headers=bob, json={"content": "Hi?"}),
     }
     for name, response in attempts.items():
         assert response.status_code == 404, name
@@ -218,6 +219,7 @@ def test_missing_or_malformed_conversation_ids_get_404(client, alice, bad_id, me
         ("get", "/documents/{id}/conversations"),
         ("get", "/conversations/{id}"),
         ("delete", "/conversations/{id}"),
+        ("post", "/conversations/{id}/messages"),
     ],
 )
 def test_conversation_routes_need_a_login(client, method, path):

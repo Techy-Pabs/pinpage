@@ -1,7 +1,11 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, StringConstraints
+
+MAX_QUESTION_LENGTH = 2000
 
 
 class ConversationResponse(BaseModel):
@@ -37,3 +41,7 @@ class MessageResponse(BaseModel):
 class ConversationDetailResponse(ConversationResponse):
     messages: list[MessageResponse]  # oldest first
 
+
+class QuestionRequest(BaseModel):
+    # Spaces around it don't count; empty or over 2,000 characters gets 422
+    content: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_QUESTION_LENGTH)]

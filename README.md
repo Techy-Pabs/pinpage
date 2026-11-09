@@ -2,7 +2,7 @@
 
 An AI document assistant for HR teams and schools. People upload their documents (handbooks, policies, guides) and ask questions about them, with answers that point back to the exact page.
 
-This repository has **Milestone 1** and the first half of **Milestone 2**. You can register, upload a PDF, watch it move from `processing` to `ready`, read its text page by page, see its sections, open the original through a short-lived link, and delete it. Nobody else can reach your documents. While processing, Pinpage also finds the document's sections, splits it into chunks that remember their pages, and creates an embedding for each chunk, ready for questions. Conversations and answers arrive in the second half of Milestone 2. The plans are in [docs/specs/milestone-1.md](docs/specs/milestone-1.md) and [docs/specs/milestone-2.md](docs/specs/milestone-2.md).
+This repository has **Milestones 1 and 2**. You can register, upload a PDF, watch it move from `processing` to `ready`, read its text page by page, see its sections, open the original through a short-lived link, and delete it. Then you can start a conversation with the document and ask questions: every answer cites the pages and section it came from, and if the document doesn't cover the question, Pinpage says so instead of guessing. Nobody else can reach your documents or your conversations. The plans are in [docs/specs/milestone-1.md](docs/specs/milestone-1.md) and [docs/specs/milestone-2.md](docs/specs/milestone-2.md).
 
 ## What it does
 
@@ -16,6 +16,7 @@ This repository has **Milestone 1** and the first half of **Milestone 2**. You c
   Then the document is `ready`. If it can't be, it is `failed` with a reason you can show the user: too many pages, password protected, a scan with no text, a damaged file, an interruption, or the AI being unavailable.
 - **Retry.** A document that failed through no fault of the file (`interrupted` or `ai_unavailable`) can be retried. It resumes from the first unfinished stage: if only the embeddings failed, only they are redone.
 - **Library.** List your documents, check one's status, read any page, list its sections, get a link to the original file, or delete it.
+- **Questions.** Start a conversation with a ready document and ask questions about it. Pinpage finds the most relevant chunks of that document only, sends them to the chat model as numbered excerpts (`[S1]`, `[S2]`...) with their pages and section, and keeps only citations that point to a real excerpt. An answer with no valid citation, or a question no chunk is close enough to, gets the fixed not found answer (the second without asking the chat model at all). Conversations are private to the person who started them.
 - **Ownership.** Every document belongs to a workspace, and every query checks your membership inside the query itself. Someone else's document gets the same `404` as one that doesn't exist.
 
 ## Stack
@@ -53,10 +54,17 @@ Every document endpoint needs a login (`Authorization: Bearer <token>`). Swagger
 | GET /documents/{id}/sections | The detected sections in order, with their pages | 200 | 404, 409 `document_not_ready` |
 | POST /documents/{id}/retry | Restarts processing after `interrupted` or `ai_unavailable`, from the first unfinished stage | 202, status `processing` | 404, 409 `retry_not_allowed`, 403 `document_limit_reached` |
 | GET /documents/{id}/file | A signed link to the original PDF, with `expires_in` | 200 | 404, 409 `document_not_ready`, 502 |
+| POST /documents/{id}/conversations | Starts a conversation with a ready document | 201 | 404, 409 `document_not_ready` |
+| GET /documents/{id}/conversations | Your conversations with this document, newest first | 200 | 404 |
+| GET /conversations/{id} | One conversation with its messages, oldest first | 200 | 404 `conversation_not_found` |
+| POST /conversations/{id}/messages | Asks a question (`{"content": "..."}`, up to 2,000 characters) and returns the answer with its citations | 201 | 404, 422, 429 `daily_limit_reached`, 503 `ai_unavailable` (nothing saved) |
+| DELETE /conversations/{id} | Deletes a conversation and its messages | 204 | 404 |
 | DELETE /documents/{id} | Deletes the file, the document and its pages, in any status | 204 | 404, 502 `storage_error` (the document is kept, so you can retry) |
 | GET /health | Health check | 200 | |
 
 Every error uses one shape: `{"error": {"code": "...", "message": "..."}}`. A `duplicate_document` error also carries `existing_document` with that document's `id` and `status`.
+
+An answer is a message with `outcome` (`answered` or `not_found`) and `citations`, each with `marker`, `page_start`, `page_end`, `section_number`, `section_title` and a `snippet` of up to 200 characters. The not found answer is always: *I couldn't find this in the document. Try rephrasing, or ask about a specific section.*
 
 A document in a response has: `id`, `title`, `original_filename`, `size_bytes`, `page_count`, `status`, `error_code`, `error_message`, `created_at` and `processed_at`. It never includes the storage key, the file's fingerprint or workspace ids.
 
@@ -88,6 +96,9 @@ All set in `.env`, so they change without code changes:
 | `CHUNK_SIZE`, `CHUNK_OVERLAP` | 1000, 150 | Characters per chunk, and characters neighbouring chunks share |
 | `EMBEDDING_BATCH_SIZE` | 64 | Chunks per embedding request |
 | `AI_REQUESTS_PER_MINUTE` | 15 | AI requests a minute at most, safely under OpenRouter's 20. Each request gets at most 2 attempts |
+| `RETRIEVAL_TOP_K` | 6 | Excerpts of the document sent with a question at most |
+| `RETRIEVAL_MIN_SIMILARITY` | 0.30 | How similar an excerpt must be to be used (ShopAssist's tuned value) |
+| `DAILY_QUESTIONS_PER_USER` | 20 | Questions per user per day, counted in UTC (429 after that) |
 
 The AI models and the other AI settings are in `.env.example`, with the values ShopAssist uses. The free daily OpenRouter allowance is shared by everything on your account, including the live ShopAssist demo.
 
@@ -141,6 +152,8 @@ The change takes effect on the user's next request; no new login is needed.
 - Admin rights are read from the database on every request, not from the token.
 - All ids are UUIDs, so they cannot be guessed by counting.
 - Every documents query joins on workspace membership, so a document you can't reach is never even loaded. Someone else's document, a missing one and a malformed id all get the same 404.
+- A conversation is reachable only by the person who started it, and only while they can still reach its document: both are checked inside the query. Retrieval for a question is limited to that conversation's document, also inside the query.
+- Excerpt text and section titles come from uploaded files, so they are untrusted: anything imitating the prompt's tags is neutralized before it reaches the chat model, and the prompt tells the model to treat excerpts as data, never as instructions.
 - The R2 bucket is private. Original files are reached only through signed links, made after the membership check, for ready documents only.
 - Storage keys are built only from UUIDs (`workspaces/{workspace_id}/documents/{document_id}.pdf`), never from a user's file name.
 - Uploads are checked by their own bytes (`%PDF-`), never by file name or claimed type. The size is checked twice: the declared size before anything is read, then the real bytes as they arrive.

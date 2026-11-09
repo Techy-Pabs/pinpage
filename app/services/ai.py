@@ -250,7 +250,8 @@ class FakeAI(AIClient):
     each text, so similar texts get similar vectors. Records every call.
 
     fail_on = {"reply"} or {"embed"} makes those calls fail like an outage;
-    fail_after_batches = n lets n embedding requests succeed first.
+    fail_after_batches = n lets n embedding requests succeed first;
+    vectors = {text: vector} fixes the embedding of chosen texts.
     """
 
     def __init__(self, dimensions: int = 2048):
@@ -260,6 +261,7 @@ class FakeAI(AIClient):
         self.fail_after_batches: int | None = None
         self.reply_calls: list[dict] = []
         self.embed_calls: list[dict] = []
+        self.vectors: dict[str, list[float]] = {}
 
     def generate_reply(self, system_prompt: str, history: list[ChatMessage]) -> str:
         self.reply_calls.append({"system_prompt": system_prompt, "history": history})
@@ -277,6 +279,8 @@ class FakeAI(AIClient):
         return [self.vector_for(text) for text in texts]
 
     def vector_for(self, text: str) -> list[float]:
+        if text in self.vectors:
+            return self.vectors[text]
         values = [0.0] * self.dimensions
         for word in re.findall(r"[a-z0-9]+", text.lower()):
             values[int(hashlib.sha256(word.encode()).hexdigest(), 16) % self.dimensions] += 1.0

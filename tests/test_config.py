@@ -24,6 +24,7 @@ def no_settings_from_environment(monkeypatch):
         "MAX_UPLOAD_MB", "MAX_DOCUMENTS_PER_WORKSPACE", "MAX_PAGES", "PROCESSING_TIMEOUT_MINUTES",
         "CHUNK_SIZE", "CHUNK_OVERLAP",
         "LANGCHAIN_TRACING_V2", "LANGSMITH_TRACING", "LANGSMITH_TRACING_V2", "LANGCHAIN_TRACING",
+        "RETRIEVAL_TOP_K", "RETRIEVAL_MIN_SIMILARITY", "DAILY_QUESTIONS_PER_USER",
         *R2_VARIABLES,
     ]:
         monkeypatch.delenv(name, raising=False)
@@ -208,3 +209,20 @@ def test_langsmith_tracing_is_off_by_default():
     assert not any(
         (settings.langchain_tracing_v2, settings.langsmith_tracing, settings.langsmith_tracing_v2, settings.langchain_tracing)
     )
+
+
+def test_answer_settings_default_to_6_chunks_0_30_and_20_questions():
+    settings = make()
+
+    assert settings.retrieval_top_k == 6
+    assert settings.retrieval_min_similarity == 0.30  # ShopAssist's tuned value
+    assert settings.daily_questions_per_user == 20
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [{"retrieval_top_k": 0}, {"retrieval_top_k": 21}, {"retrieval_min_similarity": 1.5}, {"daily_questions_per_user": 0}],
+)
+def test_impossible_answer_settings_refuse_to_start(changes):
+    with pytest.raises(ValidationError):
+        make(**changes)

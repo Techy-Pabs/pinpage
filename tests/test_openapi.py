@@ -19,6 +19,7 @@ EXPECTED = {
     ("get", "/documents/{document_id}/conversations"),
     ("get", "/conversations/{conversation_id}"),
     ("delete", "/conversations/{conversation_id}"),
+    ("post", "/conversations/{conversation_id}/messages"),
 }
 
 

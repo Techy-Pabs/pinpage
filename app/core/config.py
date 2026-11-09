@@ -74,6 +74,14 @@ class Settings(BaseSettings):
     # Safely under OpenRouter's 20 a minute for free models
     ai_requests_per_minute: int = Field(default=15, gt=0, le=20)
 
+    # Answering questions: at most this many chunks of the document per
+    # question, each at least this similar (cosine similarity, -1 to 1).
+    # 0.30 is ShopAssist's tuned value; tuned for Pinpage in Milestone 4.
+    retrieval_top_k: int = Field(default=6, gt=0, le=20)
+    retrieval_min_similarity: float = Field(default=0.30, ge=-1, le=1)
+    # Questions per user per day (UTC), to protect the shared free allowance
+    daily_questions_per_user: int = Field(default=20, gt=0)
+
     # LangSmith (which comes with LangChain's text splitter) sends traces,
     # including document text, to LangChain's servers if any of these is
     # true. Pinpage must never do that, so the app refuses to start instead.
