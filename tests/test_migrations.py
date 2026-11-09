@@ -21,7 +21,9 @@ ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
 USERS_REVISION = "bf4bd5376b01"
 WORKSPACES_REVISION = "0da6b09ad8ef"
 DOCUMENTS_REVISION = "7c2e9a41d5b3"
-ALL_TABLES = {"users", "workspaces", "workspace_members", "documents", "document_pages"}
+PAGES_REVISION = "a3f1c8e6b902"
+M1_TABLES = {"users", "workspaces", "workspace_members", "documents", "document_pages"}
+ALL_TABLES = M1_TABLES | {"document_sections", "document_chunks"}
 MIGRATIONS_DATABASE = f"{DEV_DATABASE_URL.database}_migrations_test"
 assert MIGRATIONS_DATABASE != DEV_DATABASE_URL.database
 
@@ -68,7 +70,10 @@ def test_upgrade_matches_the_models(migrations_engine, alembic_config):
 def test_upgrade_downgrade_and_upgrade_again(migrations_engine, alembic_config):
     command.upgrade(alembic_config, "head")
 
-    command.downgrade(alembic_config, "-1")  # undo only the pages migration
+    command.downgrade(alembic_config, "-1")  # undo only the sections and chunks migration
+    assert tables(migrations_engine) == M1_TABLES
+
+    command.downgrade(alembic_config, "-1")  # then only the pages migration
     assert tables(migrations_engine) == {"users", "workspaces", "workspace_members", "documents"}
 
     command.downgrade(alembic_config, "-1")  # then only the documents migration
@@ -138,3 +143,27 @@ def test_downgrading_pages_keeps_documents(migrations_engine, alembic_config):
     assert "document_pages" not in tables(migrations_engine)
     with migrations_engine.connect() as conn:
         assert conn.scalar(text("SELECT count(*) FROM documents")) == 1
+
+
+def test_chunks_have_a_halfvec_embedding_with_an_hnsw_cosine_index(migrations_engine, alembic_config):
+    command.upgrade(alembic_config, "head")
+
+    with migrations_engine.connect() as conn:
+        column_type = conn.scalar(text(
+            "SELECT format_type(atttypid, atttypmod) FROM pg_attribute "
+            "WHERE attrelid = 'document_chunks'::regclass AND attname = 'embedding'"
+        ))
+        index = conn.scalar(text(
+            "SELECT indexdef FROM pg_indexes WHERE indexname = 'ix_document_chunks_embedding_hnsw'"
+        ))
+    assert column_type == "halfvec(2048)"
+    assert "USING hnsw" in index and "halfvec_cosine_ops" in index
+    assert "ix_document_chunks_document_id" in {i["name"] for i in inspect(migrations_engine).get_indexes("document_chunks")}
+
+
+def test_downgrading_sections_and_chunks_keeps_pages(migrations_engine, alembic_config):
+    command.upgrade(alembic_config, "head")
+
+    command.downgrade(alembic_config, PAGES_REVISION)
+
+    assert tables(migrations_engine) == M1_TABLES

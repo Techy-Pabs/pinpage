@@ -39,6 +39,9 @@ def engine():
     """Create the test database and its tables once per test run."""
     create_database_if_missing(TEST_DATABASE_URL.database)
     engine = create_engine(TEST_DATABASE_URL)
+    with engine.begin() as conn:
+        # The migrations turn pgvector on; create_all doesn't, so do it here
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     yield engine

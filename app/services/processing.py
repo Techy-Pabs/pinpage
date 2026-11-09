@@ -1,5 +1,9 @@
-"""Background processing of an uploaded document: read the PDF from storage,
-extract its text page by page, and mark the document ready or failed.
+"""Background processing of an uploaded document, in stages:
+
+1. Extract pages: read the PDF from storage and extract each page's text.
+2. Find sections and build chunks (no AI requests).
+
+Then the document is marked ready, or failed with a code.
 
 Logs here never contain document text or exception messages (a database
 error's message can include the page text it was saving); only ids, codes
@@ -9,6 +13,7 @@ and exception type names.
 import io
 import logging
 import uuid
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from pypdf import PasswordType, PdfReader
@@ -16,8 +21,10 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import settings
-from app.models import Document, DocumentPage
+from app.models import Document, DocumentChunk, DocumentPage, DocumentSection
 from app.models.document import FAILURE_MESSAGES, STATUS_FAILED, STATUS_PROCESSING, STATUS_READY
+from app.services.chunking import ChunkDraft, build_chunks
+from app.services.sections import DocumentText, OutlineEntry, Section, detect_sections
 from app.services.storage import Storage, StorageError
 
 logger = logging.getLogger(__name__)
@@ -47,8 +54,47 @@ def looks_scanned(texts: list[str]) -> bool:
     return empty >= SCANNED_SHARE * len(texts)
 
 
-def extract_pages(data: bytes, max_pages: int) -> list[str]:
-    """The text of each page, in order. Raises ProcessingFailed."""
+# Outlines deeper or longer than this are cut short, so a hostile file
+# can't make reading the outline expensive
+MAX_OUTLINE_DEPTH = 10
+MAX_OUTLINE_ENTRIES = 1000
+
+
+@dataclass
+class ExtractedPdf:
+    texts: list[str]  # one per page, in order
+    outline: list[OutlineEntry] = field(default_factory=list)
+
+
+def read_outline(reader: PdfReader) -> list[OutlineEntry]:
+    """The PDF's bookmarks, if it has any. Never fails: a broken outline
+    just means sections come from the text instead."""
+    entries: list[OutlineEntry] = []
+
+    def walk(items, level: int) -> None:
+        if level > MAX_OUTLINE_DEPTH:
+            return
+        for item in items:
+            if len(entries) >= MAX_OUTLINE_ENTRIES:
+                return
+            if isinstance(item, list):
+                walk(item, level + 1)  # the children of the entry before it
+                continue
+            page = reader.get_destination_page_number(item)
+            title = str(getattr(item, "title", "") or "").replace("\x00", "")
+            if title.strip() and page is not None and page >= 0:
+                entries.append(OutlineEntry(title=title, level=level, page=page + 1))
+
+    try:
+        walk(reader.outline, 1)
+    except Exception as error:
+        logger.info("Ignoring an unreadable outline (%s)", type(error).__name__)
+        return []
+    return entries
+
+
+def extract_pages(data: bytes, max_pages: int) -> ExtractedPdf:
+    """The text of each page, in order, and the outline. Raises ProcessingFailed."""
     try:
         reader = PdfReader(io.BytesIO(data))
         if reader.is_encrypted:
@@ -77,7 +123,63 @@ def extract_pages(data: bytes, max_pages: int) -> list[str]:
 
     if looks_scanned(texts):
         raise ProcessingFailed("no_text_layer")
-    return texts
+    return ExtractedPdf(texts=texts, outline=read_outline(reader))
+
+
+@dataclass
+class Prepared:
+    """Everything stages 1 and 2 produce, saved together."""
+
+    texts: list[str]
+    sections: list[Section]
+    chunks: list[ChunkDraft]
+
+
+def prepare(extracted: ExtractedPdf, title: str) -> Prepared:
+    """Stage 2: sections and chunks, from the pages alone (no AI)."""
+    doc = DocumentText(extracted.texts)
+    sections = detect_sections(doc, extracted.outline, title)
+    chunks = build_chunks(doc, sections, settings.chunk_size, settings.chunk_overlap)
+    return Prepared(texts=extracted.texts, sections=sections, chunks=chunks)
+
+
+def _delete_prepared(db: Session, document_id: uuid.UUID) -> None:
+    """Remove pages, sections and chunks (chunks go with their sections)."""
+    db.execute(delete(DocumentSection).where(DocumentSection.document_id == document_id))
+    db.execute(delete(DocumentPage).where(DocumentPage.document_id == document_id))
+
+
+def _add_prepared(db: Session, document_id: uuid.UUID, prepared: Prepared) -> None:
+    db.add_all(
+        DocumentPage(document_id=document_id, page_number=number, text=text, char_count=len(text))
+        for number, text in enumerate(prepared.texts, start=1)
+    )
+    section_rows = [
+        DocumentSection(
+            id=uuid.uuid4(),
+            document_id=document_id,
+            position=position,
+            number=section.number,
+            title=section.title,
+            level=section.level,
+            start_page=section.start_page,
+            end_page=section.end_page,
+        )
+        for position, section in enumerate(prepared.sections)
+    ]
+    db.add_all(section_rows)
+    db.flush()  # sections first: chunks point at them
+    db.add_all(
+        DocumentChunk(
+            document_id=document_id,
+            section_id=section_rows[chunk.section_index].id,
+            position=chunk.position,
+            page_start=chunk.page_start,
+            page_end=chunk.page_end,
+            content=chunk.content,
+        )
+        for chunk in prepared.chunks
+    )
 
 
 # --- Recording the result -------------------------------------------------------------
@@ -92,24 +194,25 @@ def _lock_if_processing(db: Session, document_id: uuid.UUID) -> Document | None:
     )
 
 
-def _finish_ready(session_factory: sessionmaker, document_id: uuid.UUID, texts: list[str]) -> None:
-    # One transaction: the pages and the ready status are saved together
+def _finish_ready(session_factory: sessionmaker, document_id: uuid.UUID, prepared: Prepared) -> None:
+    # One transaction: pages, sections, chunks and the ready status are
+    # saved together, or none of them
     with session_factory() as db, db.begin():
         document = _lock_if_processing(db, document_id)
         if document is None:
             logger.info("Document %s was deleted during processing; result dropped", document_id)
             return
-        db.execute(delete(DocumentPage).where(DocumentPage.document_id == document_id))
-        db.add_all(
-            DocumentPage(document_id=document_id, page_number=number, text=text, char_count=len(text))
-            for number, text in enumerate(texts, start=1)
-        )
+        _delete_prepared(db, document_id)
+        _add_prepared(db, document_id, prepared)
         document.status = STATUS_READY
-        document.page_count = len(texts)
+        document.page_count = len(prepared.texts)
         document.error_code = None
         document.error_message = None
         document.processed_at = datetime.now(UTC)
-    logger.info("Document %s is ready (%d pages)", document_id, len(texts))
+    logger.info(
+        "Document %s is ready (%d pages, %d sections, %d chunks)",
+        document_id, len(prepared.texts), len(prepared.sections), len(prepared.chunks),
+    )
 
 
 def _finish_failed(session_factory: sessionmaker, document_id: uuid.UUID, code: str) -> None:
@@ -117,8 +220,8 @@ def _finish_failed(session_factory: sessionmaker, document_id: uuid.UUID, code: 
         document = _lock_if_processing(db, document_id)
         if document is None:
             return
-        # No pages are kept for a failed document
-        db.execute(delete(DocumentPage).where(DocumentPage.document_id == document_id))
+        # No pages, sections or chunks are kept for a failed document
+        _delete_prepared(db, document_id)
         document.status = STATUS_FAILED
         document.page_count = None
         document.error_code = code
@@ -137,16 +240,17 @@ def process_document(document_id: uuid.UUID, storage: Storage, session_factory: 
     """
     try:
         with session_factory() as db:
-            key = db.scalar(
-                select(Document.storage_key).where(
+            row = db.execute(
+                select(Document.storage_key, Document.title).where(
                     Document.id == document_id, Document.status == STATUS_PROCESSING
                 )
-            )
+            ).first()
         # The session is closed here: nothing is held during the slow part
-        if key is None:
+        if row is None:
             logger.info("Document %s is not waiting for processing; skipped", document_id)
             return
 
+        key, title = row
         try:
             data = storage.read(key)
         except StorageError:
@@ -158,11 +262,11 @@ def process_document(document_id: uuid.UUID, storage: Storage, session_factory: 
             return
 
         try:
-            texts = extract_pages(data, settings.max_pages)
+            extracted = extract_pages(data, settings.max_pages)
         except ProcessingFailed as failure:
             _finish_failed(session_factory, document_id, failure.code)
             return
-        _finish_ready(session_factory, document_id, texts)
+        _finish_ready(session_factory, document_id, prepare(extracted, title))
     except Exception as error:
         # Storage or the database failed. Only the type is logged: the
         # message could contain page text from a failed INSERT.
@@ -196,8 +300,8 @@ def mark_stuck_documents(session_factory: sessionmaker, timeout_minutes: int) ->
             .returning(Document.id)
             .execution_options(synchronize_session=False)
         ).all()
-        if stuck:
-            db.execute(delete(DocumentPage).where(DocumentPage.document_id.in_(stuck)))
+        for document_id in stuck:
+            _delete_prepared(db, document_id)
     if stuck:
         logger.warning("Marked %d stuck document(s) as interrupted", len(stuck))
     return len(stuck)

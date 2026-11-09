@@ -1,6 +1,6 @@
 import re
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # An R2 account id goes into the endpoint's host name, so only letters,
@@ -45,6 +45,17 @@ class Settings(BaseSettings):
     # processing after the timeout is marked interrupted when the app starts.
     max_pages: int = Field(default=100, gt=0)
     processing_timeout_minutes: int = Field(default=15, gt=0)
+
+    # Chunking: about this many characters per chunk, with this much
+    # repeated between neighbours so a sentence cut at a boundary isn't lost
+    chunk_size: int = Field(default=1000, ge=200, le=8000)
+    chunk_overlap: int = Field(default=150, ge=0)
+
+    @model_validator(mode="after")
+    def overlap_smaller_than_chunk(self):
+        if self.chunk_overlap >= self.chunk_size:
+            raise ValueError("CHUNK_OVERLAP must be smaller than CHUNK_SIZE")
+        return self
 
     @property
     def max_upload_bytes(self) -> int:

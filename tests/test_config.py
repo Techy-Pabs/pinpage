@@ -22,6 +22,7 @@ def no_settings_from_environment(monkeypatch):
     for name in [
         "DATABASE_URL", "JWT_SECRET", "JWT_EXPIRE_MINUTES", "SIGNED_URL_SECONDS",
         "MAX_UPLOAD_MB", "MAX_DOCUMENTS_PER_WORKSPACE", "MAX_PAGES", "PROCESSING_TIMEOUT_MINUTES",
+        "CHUNK_SIZE", "CHUNK_OVERLAP",
         *R2_VARIABLES,
     ]:
         monkeypatch.delenv(name, raising=False)
@@ -162,5 +163,20 @@ def test_processing_limits_default_to_100_pages_and_15_minutes():
 
 @pytest.mark.parametrize("changes", [{"max_pages": 0}, {"processing_timeout_minutes": 0}])
 def test_impossible_processing_limits_refuse_to_start(changes):
+    with pytest.raises(ValidationError):
+        make(**changes)
+
+
+def test_chunking_defaults_to_1000_characters_with_150_overlap():
+    settings = make()
+
+    assert (settings.chunk_size, settings.chunk_overlap) == (1000, 150)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [{"chunk_overlap": 1000}, {"chunk_size": 500, "chunk_overlap": 600}, {"chunk_size": 100}, {"chunk_overlap": -1}],
+)
+def test_impossible_chunking_settings_refuse_to_start(changes):
     with pytest.raises(ValidationError):
         make(**changes)

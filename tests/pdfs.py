@@ -95,3 +95,24 @@ def damaged_pdf() -> bytes:
 
 # Long enough to count as a real text page (20 characters or more)
 LONG_TEXT = "This page has a real text layer with plenty of words."
+
+
+def outlined_pdf(page_texts: list[str], outline: list[tuple[str, int, int]]) -> bytes:
+    """A text PDF with bookmarks. outline: (title, level from 1, page from 1)."""
+    from reportlab.pdfgen import canvas
+
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, invariant=1)
+    for page_number, text in enumerate(page_texts, start=1):
+        y = 750
+        for line in text.split("\n"):
+            pdf.drawString(72, y, line)
+            y -= 16
+        for index, (title, level, page) in enumerate(outline):
+            if page == page_number:
+                key = f"bookmark-{index}"
+                pdf.bookmarkPage(key)
+                pdf.addOutlineEntry(title, key, level=level - 1)
+        pdf.showPage()
+    pdf.save()
+    return buffer.getvalue()

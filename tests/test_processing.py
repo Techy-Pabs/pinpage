@@ -15,11 +15,11 @@ from sqlalchemy.exc import IntegrityError
 from app.core.config import settings
 from app.dependencies import get_session_factory
 from app.main import app
-from app.models import Document, DocumentPage
+from app.models import Document, DocumentChunk, DocumentPage, DocumentSection
 from app.models.document import STATUS_FAILED, STATUS_PROCESSING, STATUS_READY
 from app.services import processing
 from app.services.processing import ProcessingFailed, extract_pages, mark_stuck_documents, process_document
-from tests.pdfs import LONG_TEXT, damaged_pdf, encrypted_pdf, image_only_pdf, make_pdf, text_pdf
+from tests.pdfs import LONG_TEXT, damaged_pdf, encrypted_pdf, image_only_pdf, make_pdf, outlined_pdf, text_pdf
 
 MESSAGES = {
     "too_many_pages": "This document has more than 100 pages. Upload a shorter file.",
@@ -159,7 +159,7 @@ def test_nul_characters_are_removed_before_saving(monkeypatch):
 
     monkeypatch.setattr(processing, "PdfReader", Reader)
 
-    texts = extract_pages(b"%PDF-", max_pages=100)
+    texts = extract_pages(b"%PDF-", max_pages=100).texts
 
     assert all("\x00" not in text for text in texts)
     assert texts[0].startswith("Beforeafter.")
@@ -216,9 +216,10 @@ def test_database_failure_while_saving_fails_the_document_and_logs_no_text(
     secret_text = "Confidential salary table for every employee"
     document = make_document(data=text_pdf([secret_text]))
 
-    def broken_save(session_factory, document_id, texts):
+    def broken_save(session_factory, document_id, prepared):
         # A real database error's message includes the parameters it was sending
-        raise IntegrityError(f"INSERT ... ({texts[0]})", {"text": texts[0]}, Exception(texts[0]))
+        text = prepared.texts[0]
+        raise IntegrityError(f"INSERT ... ({text})", {"text": text}, Exception(text))
 
     monkeypatch.setattr(processing, "_finish_ready", broken_save)
 
@@ -335,3 +336,96 @@ def test_app_makes_its_sessions_from_session_local_by_default():
     from app.db.session import SessionLocal
 
     assert app.state.session_factory is SessionLocal
+
+
+# --- Sections and chunks (stage 2) ---------------------------------------------------------------
+
+def sections_of(db, document_id) -> list[DocumentSection]:
+    db.expire_all()
+    return db.scalars(
+        select(DocumentSection).where(DocumentSection.document_id == document_id).order_by(DocumentSection.position)
+    ).all()
+
+
+def chunks_of(db, document_id) -> list[DocumentChunk]:
+    db.expire_all()
+    return db.scalars(
+        select(DocumentChunk).where(DocumentChunk.document_id == document_id).order_by(DocumentChunk.position)
+    ).all()
+
+
+def test_pdf_with_an_outline_gets_sections_from_the_outline(db, upload):
+    pdf = outlined_pdf(
+        [f"Welcome. {LONG_TEXT}", f"Leave rules. {LONG_TEXT}", f"Annual leave. {LONG_TEXT}"],
+        [("1 Welcome", 1, 1), ("2 Leave", 1, 2), ("2.1 Annual Leave", 2, 3)],
+    )
+
+    document_id = upload(pdf, filename="Staff Handbook.pdf")
+
+    sections = sections_of(db, document_id)
+    assert [(s.position, s.number, s.title, s.level, s.start_page, s.end_page) for s in sections] == [
+        (0, "1", "Welcome", 1, 1, 1),
+        (1, "2", "Leave", 1, 2, 3),
+        (2, "2.1", "Annual Leave", 2, 3, 3),
+    ]
+    chunks = chunks_of(db, document_id)
+    by_section = {s.id: s.title for s in sections}
+    assert [(by_section[c.section_id], c.page_start, c.page_end) for c in chunks] == [
+        ("Welcome", 1, 1), ("Leave", 2, 2), ("Annual Leave", 3, 3),
+    ]
+    assert all(c.embedding is None for c in chunks)  # embeddings arrive in stage 3
+
+
+def test_pdf_without_an_outline_gets_sections_from_numbered_headings(db, upload):
+    pdf = text_pdf([
+        f"1. Welcome\n{LONG_TEXT}\n2. Pay\n{LONG_TEXT}",
+        f"2.1 Overtime\n{LONG_TEXT}",
+        f"3. Conduct\n{LONG_TEXT}",
+    ])
+
+    document_id = upload(pdf)
+
+    assert [(s.number, s.title, s.level, s.start_page, s.end_page) for s in sections_of(db, document_id)] == [
+        ("1", "Welcome", 1, 1, 1),
+        ("2", "Pay", 1, 1, 2),
+        ("2.1", "Overtime", 2, 2, 2),
+        ("3", "Conduct", 1, 3, 3),
+    ]
+
+
+def test_pdf_with_neither_gets_one_section_named_after_the_document(db, upload):
+    document_id = upload(text_pdf([f"Plain text. {LONG_TEXT}", f"More plain text. {LONG_TEXT}"]), filename="Visitor Policy.pdf")
+
+    sections = sections_of(db, document_id)
+    assert [(s.number, s.title, s.level, s.start_page, s.end_page) for s in sections] == [
+        (None, "Visitor Policy", 1, 1, 2)
+    ]
+    chunks = chunks_of(db, document_id)
+    assert len(chunks) == 1 and (chunks[0].page_start, chunks[0].page_end) == (1, 2)  # crosses the page break
+    assert "Plain text." in chunks[0].content and "More plain text." in chunks[0].content
+
+
+def test_failed_document_keeps_no_sections_or_chunks(db, register, make_document, session_factory, fake_storage):
+    register()
+    document = make_document(data=damaged_pdf())
+    section = DocumentSection(document_id=document.id, position=0, title="Old", level=1, start_page=1, end_page=1)
+    db.add(section)
+    db.flush()
+    db.add(DocumentChunk(document_id=document.id, section_id=section.id, position=0, page_start=1, page_end=1, content="old"))
+    db.commit()
+
+    process_document(document.id, fake_storage, session_factory)
+
+    assert reload(db, document.id).error_code == "unreadable"
+    assert sections_of(db, document.id) == [] and chunks_of(db, document.id) == []
+
+
+def test_deleting_a_document_deletes_its_sections_and_chunks(db, upload):
+    document_id = upload(text_pdf([f"1. Welcome\n{LONG_TEXT}"]))
+    assert sections_of(db, document_id) and chunks_of(db, document_id)
+
+    db.execute(delete(Document).where(Document.id == document_id))
+    db.commit()
+
+    assert db.scalar(select(func.count()).select_from(DocumentSection)) == 0
+    assert db.scalar(select(func.count()).select_from(DocumentChunk)) == 0
