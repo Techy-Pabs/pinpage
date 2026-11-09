@@ -200,3 +200,10 @@ Where this section disagrees with anything above, this section wins.
 
 1. `langchain-text-splitters` cannot be installed alone: it requires `langchain-core`, which brings `langsmith`, `langchain-protocol` and some small libraries with it. They are accepted as dependencies of the splitter. Only `requirements.txt`'s own line is pinned, our code imports nothing but `RecursiveCharacterTextSplitter`, and LangSmith tracing is never configured.
 2. The AI layer uses the versions ShopAssist runs with: `openai==1.109.1` and `pgvector==0.4.1`, not the newest releases. Upgrading them is a separate change.
+3. Stages 1 and 2 (pages, sections and chunks) are saved in one transaction. A retry therefore resumes either at stage 1 (nothing saved) or at stage 3 (only the chunks still missing an embedding).
+4. A retry checks the document limit like an upload, since a retried document counts toward it again (403 `document_limit_reached`).
+5. The stuck document check counts from `updated_at`, which an upload or a retry sets, and keeps the stages a stuck document finished.
+6. `OPENROUTER_API_KEY` is optional locally (documents fail with `ai_unavailable` without it) but must be set before deployment.
+7. The request pacer is per process, so production runs a single worker until the pacer is shared (for example through the database).
+8. Known section detection limits may be revisited in Milestone 3: a numbered heading whose title ends in a number ("3. Phase 2") is skipped as a contents page line, and a short capitalised list item without a full stop can be taken for a heading.
+9. LangSmith tracing must never be enabled. The app refuses to start if `LANGCHAIN_TRACING_V2` or `LANGSMITH_TRACING` (or the variants `LANGSMITH_TRACING_V2` and `LANGCHAIN_TRACING`, which LangSmith also reads) is set to true.

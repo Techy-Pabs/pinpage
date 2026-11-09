@@ -23,6 +23,7 @@ def no_settings_from_environment(monkeypatch):
         "DATABASE_URL", "JWT_SECRET", "JWT_EXPIRE_MINUTES", "SIGNED_URL_SECONDS",
         "MAX_UPLOAD_MB", "MAX_DOCUMENTS_PER_WORKSPACE", "MAX_PAGES", "PROCESSING_TIMEOUT_MINUTES",
         "CHUNK_SIZE", "CHUNK_OVERLAP",
+        "LANGCHAIN_TRACING_V2", "LANGSMITH_TRACING", "LANGSMITH_TRACING_V2", "LANGCHAIN_TRACING",
         *R2_VARIABLES,
     ]:
         monkeypatch.delenv(name, raising=False)
@@ -180,3 +181,30 @@ def test_chunking_defaults_to_1000_characters_with_150_overlap():
 def test_impossible_chunking_settings_refuse_to_start(changes):
     with pytest.raises(ValidationError):
         make(**changes)
+
+
+TRACING_VARIABLES = ["LANGCHAIN_TRACING_V2", "LANGSMITH_TRACING", "LANGSMITH_TRACING_V2", "LANGCHAIN_TRACING"]
+
+
+@pytest.mark.parametrize("variable", TRACING_VARIABLES)
+@pytest.mark.parametrize("value", ["true", "True", "1"])
+def test_langsmith_tracing_switched_on_refuses_to_start(monkeypatch, variable, value):
+    monkeypatch.setenv(variable, value)
+
+    with pytest.raises(ValidationError, match=f"{variable} is true"):
+        make()
+
+
+@pytest.mark.parametrize("variable", TRACING_VARIABLES)
+def test_langsmith_tracing_switched_off_is_fine(monkeypatch, variable):
+    monkeypatch.setenv(variable, "false")
+
+    assert make() is not None
+
+
+def test_langsmith_tracing_is_off_by_default():
+    settings = make()
+
+    assert not any(
+        (settings.langchain_tracing_v2, settings.langsmith_tracing, settings.langsmith_tracing_v2, settings.langchain_tracing)
+    )

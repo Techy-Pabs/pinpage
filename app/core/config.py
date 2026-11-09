@@ -74,6 +74,25 @@ class Settings(BaseSettings):
     # Safely under OpenRouter's 20 a minute for free models
     ai_requests_per_minute: int = Field(default=15, gt=0, le=20)
 
+    # LangSmith (which comes with LangChain's text splitter) sends traces,
+    # including document text, to LangChain's servers if any of these is
+    # true. Pinpage must never do that, so the app refuses to start instead.
+    # Read here only to be checked; nothing else uses them.
+    langchain_tracing_v2: bool = False
+    langsmith_tracing: bool = False
+    langsmith_tracing_v2: bool = False
+    langchain_tracing: bool = False
+
+    @field_validator("langchain_tracing_v2", "langsmith_tracing", "langsmith_tracing_v2", "langchain_tracing")
+    @classmethod
+    def tracing_never_enabled(cls, value: bool, info) -> bool:
+        if value:
+            raise ValueError(
+                f"{info.field_name.upper()} is true; LangSmith tracing would send document text "
+                "outside Pinpage. Remove it or set it to false."
+            )
+        return value
+
     @field_validator("openrouter_api_key", mode="before")
     @classmethod
     def empty_key_means_none(cls, value):
