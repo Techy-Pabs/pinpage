@@ -2,12 +2,13 @@
 limit, the history sent to the chat model, and saving the pair."""
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from app.models import Conversation, Message, User
+from app.models import Conversation, Message, QuestionUsage, User
 from app.models.conversation import DEFAULT_TITLE, ROLE_ASSISTANT, ROLE_USER, TITLE_LENGTH
 from app.services.ai import ChatMessage
 from app.services.citations import strip_markers
@@ -16,27 +17,35 @@ from app.services.citations import strip_markers
 HISTORY_PAIRS = 3
 
 
-def start_of_today_utc() -> datetime:
-    return datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+def today_utc() -> date:
+    return datetime.now(UTC).date()
 
 
 def questions_today(db: Session, user_id: uuid.UUID) -> int:
-    """The user's questions since midnight UTC, in all their conversations."""
-    return db.scalar(
-        select(func.count())
-        .select_from(Message)
-        .join(Conversation, Conversation.id == Message.conversation_id)
-        .where(
-            Conversation.user_id == user_id,
-            Message.role == ROLE_USER,
-            Message.created_at >= start_of_today_utc(),
+    """The user's questions today (UTC), from question_usage: deleting
+    conversations or documents never lowers it."""
+    count = db.scalar(
+        select(QuestionUsage.count).where(QuestionUsage.user_id == user_id, QuestionUsage.used_on == today_utc())
+    )
+    return count or 0
+
+
+def count_question(db: Session, user_id: uuid.UUID) -> None:
+    """One more question today, in the caller's transaction (the one that
+    saves the question and answer), under lock_user."""
+    db.execute(
+        insert(QuestionUsage)
+        .values(user_id=user_id, used_on=today_utc(), count=1)
+        .on_conflict_do_update(
+            index_elements=[QuestionUsage.user_id, QuestionUsage.used_on],
+            set_={"count": QuestionUsage.count + 1},
         )
     )
 
 
 def lock_user(db: Session, user_id: uuid.UUID) -> None:
     """Holds the user's row until commit, so two questions saved at once
-    can't both pass the final daily limit check."""
+    can't both pass the final daily limit check and count."""
     db.execute(select(User.id).where(User.id == user_id).with_for_update())
 
 

@@ -6,10 +6,10 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 
 from app.core.config import settings
-from app.models import Conversation, DocumentChunk, DocumentSection, Message
+from app.models import Conversation, DocumentChunk, DocumentSection, Message, QuestionUsage
 from app.models.document import STATUS_READY
 from app.services.citations import cite, snippet, strip_markers
 from app.services.prompts import NOT_FOUND_MESSAGE, build_grounding_prompt
@@ -358,53 +358,135 @@ def test_only_the_last_three_pairs_go_to_the_chat_model_without_old_markers(db, 
 
 # --- Limits and failures ----------------------------------------------------------------------------
 
-def add_questions(db, conversation_id, n, when=None):
-    for _ in range(n):
-        db.add(Message(conversation_id=uuid.UUID(conversation_id), role="user", content="Earlier?"))
-        db.flush()
-        db.add(Message(conversation_id=uuid.UUID(conversation_id), role="assistant", content="Earlier [S1].",
-                       outcome="answered", citations=[]))
-        db.flush()
-    if when is not None:
-        db.execute(update(Message).values(created_at=when))
+def alice_id(db):
+    from app.models import User
+
+    return db.scalars(select(User.id).where(User.email == "alice@example.com")).one()
+
+
+def set_usage(db, user_id, count, day=None):
+    """As if the user had already asked count questions on day (default today, UTC)."""
+    db.add(QuestionUsage(user_id=user_id, used_on=day or datetime.now(UTC).date(), count=count))
     db.commit()
 
 
+def usage_today(db, user_id) -> int:
+    db.expire_all()
+    return db.scalar(
+        select(QuestionUsage.count).where(
+            QuestionUsage.user_id == user_id, QuestionUsage.used_on == datetime.now(UTC).date()
+        )
+    ) or 0
+
+
 def test_daily_limit_gives_429_and_saves_nothing(db, alice, ask, leave_conversation, fake_ai):
-    add_questions(db, leave_conversation, 20)
-    before = count(db, Message)
+    set_usage(db, alice_id(db), 20)
 
     response = ask(alice, leave_conversation)
 
     assert response.status_code == 429
     assert response.json()["error"]["code"] == "daily_limit_reached"
-    assert count(db, Message) == before
+    assert count(db, Message) == 0
+    assert usage_today(db, alice_id(db)) == 20
     assert fake_ai.embed_calls == [] and fake_ai.reply_calls == []  # no AI request spent
 
 
-def test_daily_limit_counts_all_your_conversations(db, alice, ask, make_ready_document, conversation_for, leave_conversation):
-    other = conversation_for(alice, make_ready_document(chunks=[SICK], title="Other"))
-    add_questions(db, other, 20)
+def test_each_answered_question_counts_once(db, alice, ask, leave_conversation, fake_ai):
+    fake_ai.reply = "Five days [S1]."
 
+    ask(alice, leave_conversation)
+    ask(alice, leave_conversation)
+
+    assert usage_today(db, alice_id(db)) == 2
+
+
+def test_not_found_answers_count_toward_the_limit(db, alice, ask, make_ready_document, conversation_for, fake_ai):
+    fake_ai.vectors[QUESTION] = vec(d2=1.0)  # nothing close: not found, no chat request
+    conversation = conversation_for(alice, make_ready_document(chunks=[LEAVE]))
+
+    assert ask(alice, conversation).json()["outcome"] == "not_found"
+    assert usage_today(db, alice_id(db)) == 1
+
+
+@pytest.mark.parametrize("problem", ["ai-down", "too-long"])
+def test_failed_questions_do_not_count(db, alice, ask, leave_conversation, fake_ai, problem):
+    if problem == "ai-down":
+        fake_ai.fail_on = {"embed"}
+        assert ask(alice, leave_conversation).status_code == 503
+    else:
+        assert ask(alice, leave_conversation, "x" * 2001).status_code == 422
+
+    assert usage_today(db, alice_id(db)) == 0
+
+
+def test_deleting_a_conversation_does_not_free_up_questions(client, db, alice, ask, leave_conversation, fake_ai, monkeypatch):
+    monkeypatch.setattr(settings, "daily_questions_per_user", 2)
+    fake_ai.reply = "Five days [S1]."
+    assert ask(alice, leave_conversation).status_code == 201
+    assert ask(alice, leave_conversation).status_code == 201
+    document_id = client.get(f"/conversations/{leave_conversation}", headers=alice).json()["document_id"]
+
+    # Deleting the conversation deletes its messages...
+    assert client.delete(f"/conversations/{leave_conversation}", headers=alice).status_code == 204
+    assert count(db, Message) == 0
+
+    # ...but not the count: a new conversation is still over the limit
+    fresh = client.post(f"/documents/{document_id}/conversations", headers=alice).json()["id"]
+    response = ask(alice, fresh)
+    assert response.status_code == 429
+    assert response.json()["error"]["code"] == "daily_limit_reached"
+
+
+def test_deleting_the_document_does_not_free_up_questions_either(client, db, alice, ask, leave_conversation, fake_ai, make_ready_document, conversation_for, monkeypatch):
+    monkeypatch.setattr(settings, "daily_questions_per_user", 1)
+    fake_ai.reply = "Five days [S1]."
+    ask(alice, leave_conversation)
+    document_id = client.get(f"/conversations/{leave_conversation}", headers=alice).json()["document_id"]
+
+    assert client.delete(f"/documents/{document_id}", headers=alice).status_code == 204
+
+    other = conversation_for(alice, make_ready_document(chunks=[LEAVE], title="Other"))
+    assert ask(alice, other).status_code == 429
+
+
+def test_daily_limit_counts_all_your_conversations(db, alice, ask, make_ready_document, conversation_for, leave_conversation, fake_ai, monkeypatch):
+    monkeypatch.setattr(settings, "daily_questions_per_user", 2)
+    fake_ai.reply = "Five days [S1]."
+    other = conversation_for(alice, make_ready_document(chunks=[LEAVE], title="Other"))
+
+    assert ask(alice, leave_conversation).status_code == 201
+    assert ask(alice, other).status_code == 201
     assert ask(alice, leave_conversation).status_code == 429
 
 
-def test_questions_before_midnight_utc_do_not_count(db, alice, ask, leave_conversation, fake_ai):
-    midnight = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-    add_questions(db, leave_conversation, 20, when=midnight - timedelta(seconds=1))
+def test_yesterdays_questions_do_not_count(db, alice, ask, leave_conversation, fake_ai):
+    set_usage(db, alice_id(db), 20, day=datetime.now(UTC).date() - timedelta(days=1))
     fake_ai.reply = "Five days [S1]."
 
     assert ask(alice, leave_conversation).status_code == 201
+    assert usage_today(db, alice_id(db)) == 1
 
 
 def test_the_limit_is_per_user(db, alice, auth_headers, ask, make_ready_document, conversation_for, leave_conversation, fake_ai):
-    add_questions(db, leave_conversation, 20)
+    set_usage(db, alice_id(db), 20)
     bob = auth_headers("bob@example.com")
     fake_ai.vectors[QUESTION] = vec(d0=1.0)
     fake_ai.reply = "Five days [S1]."
     bob_conversation = conversation_for(bob, make_ready_document("bob@example.com", chunks=[LEAVE]))
 
     assert ask(bob, bob_conversation).status_code == 201
+
+
+def test_usage_goes_with_the_user(db, alice, ask, leave_conversation, fake_ai):
+    from app.models import User, WorkspaceMember
+
+    set_usage(db, alice_id(db), 3)
+    user = db.get(User, alice_id(db))
+    db.query(WorkspaceMember).delete()
+    db.delete(user)
+    db.commit()
+
+    assert db.scalar(select(func.count()).select_from(QuestionUsage)) == 0
 
 
 @pytest.mark.parametrize("content", ["x" * 2001, "", "   "])
@@ -511,3 +593,14 @@ def test_snippet_is_at_most_200_characters_cut_at_a_word():
 
 def test_strip_markers():
     assert strip_markers("Five days [S1]. Three [S2][S3].") == "Five days. Three."
+
+
+def test_the_prompt_allows_partial_answers_with_markers():
+    prompt = build_grounding_prompt("Handbook", CHUNKS)
+
+    assert (
+        "If the excerpts answer only part of the question, answer that part with markers and say "
+        "plainly which part the document does not cover." in prompt
+    )
+    # Right after the not found rule
+    assert prompt.index("only part of the question") > prompt.index("with no marker: " + NOT_FOUND_MESSAGE)

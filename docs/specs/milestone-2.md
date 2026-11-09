@@ -207,3 +207,11 @@ Where this section disagrees with anything above, this section wins.
 7. The request pacer is per process, so production runs a single worker until the pacer is shared (for example through the database).
 8. Known section detection limits may be revisited in Milestone 3: a numbered heading whose title ends in a number ("3. Phase 2") is skipped as a contents page line, and a short capitalised list item without a full stop can be taken for a heading.
 9. LangSmith tracing must never be enabled. The app refuses to start if `LANGCHAIN_TRACING_V2` or `LANGSMITH_TRACING` (or the variants `LANGSMITH_TRACING_V2` and `LANGCHAIN_TRACING`, which LangSmith also reads) is set to true.
+
+**Run B**
+
+10. Retrieval uses an exact search within one document, not the HNSW index. Ordering by the similarity expression keeps the planner off the index, which would find the nearest chunks of all documents before filtering by document. One document has at most a few hundred chunks.
+11. The daily limit is counted in `question_usage` (user, UTC date, count), increased in the same transaction that saves the question and answer, under a lock on the user's row. Deleting conversations or documents never touches it; it is deleted only with the user.
+12. In a race between simultaneous questions, a 429 after the AI requests were made is accepted: the final check at saving time keeps the count exact, at the cost of those requests.
+13. Not found answers count toward the daily limit (they still cost an embedding request).
+14. Partial answers are allowed: when the excerpts answer only part of a question, the model answers that part with markers and says plainly which part the document does not cover.

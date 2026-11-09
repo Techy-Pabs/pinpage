@@ -23,9 +23,11 @@ WORKSPACES_REVISION = "0da6b09ad8ef"
 DOCUMENTS_REVISION = "7c2e9a41d5b3"
 PAGES_REVISION = "a3f1c8e6b902"
 CHUNKS_REVISION = "c5d2e7f84a16"
+CONVERSATIONS_REVISION = "e8b3f0a2c7d4"
 M1_TABLES = {"users", "workspaces", "workspace_members", "documents", "document_pages"}
 RUN_A_TABLES = M1_TABLES | {"document_sections", "document_chunks"}
-ALL_TABLES = RUN_A_TABLES | {"conversations", "messages"}
+CONVERSATION_TABLES = RUN_A_TABLES | {"conversations", "messages"}
+ALL_TABLES = CONVERSATION_TABLES | {"question_usage"}
 MIGRATIONS_DATABASE = f"{DEV_DATABASE_URL.database}_migrations_test"
 assert MIGRATIONS_DATABASE != DEV_DATABASE_URL.database
 
@@ -72,7 +74,10 @@ def test_upgrade_matches_the_models(migrations_engine, alembic_config):
 def test_upgrade_downgrade_and_upgrade_again(migrations_engine, alembic_config):
     command.upgrade(alembic_config, "head")
 
-    command.downgrade(alembic_config, "-1")  # undo only the conversations migration
+    command.downgrade(alembic_config, "-1")  # undo only the question usage migration
+    assert tables(migrations_engine) == CONVERSATION_TABLES
+
+    command.downgrade(alembic_config, "-1")  # then only the conversations migration
     assert tables(migrations_engine) == RUN_A_TABLES
 
     command.downgrade(alembic_config, "-1")  # then only the sections and chunks migration
@@ -180,3 +185,11 @@ def test_downgrading_conversations_keeps_chunks(migrations_engine, alembic_confi
     command.downgrade(alembic_config, CHUNKS_REVISION)
 
     assert tables(migrations_engine) == RUN_A_TABLES
+
+
+def test_downgrading_question_usage_keeps_conversations(migrations_engine, alembic_config):
+    command.upgrade(alembic_config, "head")
+
+    command.downgrade(alembic_config, CONVERSATIONS_REVISION)
+
+    assert tables(migrations_engine) == CONVERSATION_TABLES

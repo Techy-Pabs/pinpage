@@ -1,7 +1,7 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, Text, Uuid, func
+from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, String, Text, Uuid, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -68,3 +68,19 @@ class Message(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.clock_timestamp()
     )
+
+
+class QuestionUsage(Base):
+    """How many questions a user asked on one day (UTC), for the daily limit.
+
+    Kept apart from the messages on purpose: deleting a conversation or a
+    document deletes its messages, but never this count, so it can't reset
+    the limit. Deleted only with the user.
+    """
+
+    __tablename__ = "question_usage"
+    __table_args__ = (CheckConstraint("count >= 0", name="count_not_negative"),)
+
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    used_on: Mapped[date] = mapped_column(Date, primary_key=True)  # the UTC date
+    count: Mapped[int] = mapped_column(Integer)

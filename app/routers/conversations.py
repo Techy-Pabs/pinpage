@@ -195,6 +195,7 @@ def ask_question(
     if answering.questions_today(db, current_user.id) >= settings.daily_questions_per_user:
         raise daily_limit_reached()  # another question got there first
     reply_message = answering.save_pair(db, locked, question, answer, outcome, citations)
+    answering.count_question(db, current_user.id)  # same transaction, still under the user lock
     db.commit()
     db.refresh(reply_message)
     # Ids and outcomes only, never the question or the answer
