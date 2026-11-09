@@ -51,6 +51,63 @@ class Settings(BaseSettings):
     chunk_size: int = Field(default=1000, ge=200, le=8000)
     chunk_overlap: int = Field(default=150, ge=0)
 
+    # The AI, through OpenRouter (settings and values as in ShopAssist).
+    # The key is optional so the app and tests start without it; processing
+    # then fails with ai_unavailable until it is set.
+    openrouter_api_key: SecretStr | None = None
+    ai_base_url: str = "https://openrouter.ai/api/v1"
+    # A specific free chat model. Avoid openrouter/free: it can route chat to
+    # a safety classifier that answers "User Safety: safe" instead of replying.
+    ai_chat_model: str = "nvidia/nemotron-3-ultra-550b-a55b:free"
+    # Tried in order if the chat model can't answer (comma separated)
+    ai_chat_fallback_models: str = "nvidia/nemotron-3.5-super-vl:free"
+    ai_embedding_model: str = "nvidia/nemotron-3-embed-1b:free"
+    # Must match the document_chunks.embedding column, fixed by the migration
+    embedding_dimensions: int = 2048
+    # Long enough for a model that thinks before it answers, and for
+    # OpenRouter to try the fallback if it can't
+    ai_timeout_seconds: float = Field(default=45, gt=0, le=120)
+    ai_max_tokens: int = Field(default=1000, gt=0)
+    # Texts per embedding request; each request counts once against the
+    # free daily allowance
+    embedding_batch_size: int = Field(default=64, gt=0, le=256)
+    # Safely under OpenRouter's 20 a minute for free models
+    ai_requests_per_minute: int = Field(default=15, gt=0, le=20)
+
+    @field_validator("openrouter_api_key", mode="before")
+    @classmethod
+    def empty_key_means_none(cls, value):
+        # OPENROUTER_API_KEY= (empty) counts as not set
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("ai_base_url")
+    @classmethod
+    def ai_base_url_is_https(cls, value: str) -> str:
+        # The key is sent there, so never over plain HTTP
+        if not value.startswith("https://"):
+            raise ValueError("AI_BASE_URL must start with https://")
+        return value.rstrip("/")
+
+    @field_validator("embedding_dimensions")
+    @classmethod
+    def dimensions_match_the_column(cls, value: int) -> int:
+        from app.models.chunk import EMBEDDING_COLUMN_DIMENSIONS
+
+        if value != EMBEDDING_COLUMN_DIMENSIONS:
+            raise ValueError(
+                f"EMBEDDING_DIMENSIONS must be {EMBEDDING_COLUMN_DIMENSIONS}, the size of the "
+                "embedding column; a model with another size needs a new migration"
+            )
+        return value
+
+    @property
+    def ai_chat_models(self) -> list[str]:
+        """The chat model first, then each fallback, without repeats."""
+        models = [self.ai_chat_model] + [m.strip() for m in self.ai_chat_fallback_models.split(",") if m.strip()]
+        return list(dict.fromkeys(models))
+
     @model_validator(mode="after")
     def overlap_smaller_than_chunk(self):
         if self.chunk_overlap >= self.chunk_size:

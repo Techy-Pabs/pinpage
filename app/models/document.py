@@ -29,8 +29,13 @@ FAILURE_MESSAGES = {
     "encrypted": "This PDF is password protected. Remove the password and upload it again.",
     "no_text_layer": "This looks like a scanned document. Pinpage can't read scans yet.",
     "unreadable": "We couldn't read this PDF. It may be damaged.",
-    "interrupted": "Processing was interrupted. Delete this document and upload it again.",
+    "interrupted": "Processing was interrupted. Try again.",
+    "ai_unavailable": "Pinpage couldn't prepare this document for questions right now. Try again later.",
 }
+
+# Failures that aren't the file's fault: POST /documents/{id}/retry restarts
+# processing for these, from the first unfinished stage
+RETRYABLE_CODES = ("interrupted", "ai_unavailable")
 
 # Documents that count toward the per-workspace limit (failed ones don't)
 COUNTED_STATUSES = (STATUS_PROCESSING, STATUS_READY)

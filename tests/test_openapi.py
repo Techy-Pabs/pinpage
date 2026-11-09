@@ -12,6 +12,8 @@ EXPECTED = {
     ("get", "/documents/{document_id}"),
     ("get", "/documents/{document_id}/pages/{page_number}"),
     ("get", "/documents/{document_id}/file"),
+    ("get", "/documents/{document_id}/sections"),
+    ("post", "/documents/{document_id}/retry"),
     ("delete", "/documents/{document_id}"),
 }
 

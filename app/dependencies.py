@@ -10,6 +10,7 @@ from app.core.errors import ApiError
 from app.core.security import decode_access_token
 from app.db.session import SessionLocal
 from app.models import User
+from app.services.ai import AIClient, default_ai
 from app.services.storage import Storage, default_storage
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,15 @@ def get_storage() -> Storage:
     so there is no test mode switch in the settings.
     """
     return default_storage()
+
+
+def get_ai() -> AIClient:
+    """The AI: OpenRouter in the app.
+
+    Tests replace it with FakeAI through app.dependency_overrides, like
+    storage, so no test can call OpenRouter.
+    """
+    return default_ai()
 
 
 def unauthorized() -> ApiError:

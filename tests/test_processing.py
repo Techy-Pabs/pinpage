@@ -26,7 +26,8 @@ MESSAGES = {
     "encrypted": "This PDF is password protected. Remove the password and upload it again.",
     "no_text_layer": "This looks like a scanned document. Pinpage can't read scans yet.",
     "unreadable": "We couldn't read this PDF. It may be damaged.",
-    "interrupted": "Processing was interrupted. Delete this document and upload it again.",
+    "interrupted": "Processing was interrupted. Try again.",
+    "ai_unavailable": "Pinpage couldn't prepare this document for questions right now. Try again later.",
 }
 
 
@@ -180,21 +181,21 @@ def test_pdf_with_no_pages_is_unreadable(monkeypatch):
     assert failure.value.code == "unreadable"
 
 
-def test_failure_deletes_pages_already_saved(db, register, make_document, session_factory, fake_storage):
+def test_failure_deletes_pages_already_saved(db, register, make_document, session_factory, fake_storage, fake_ai):
     register()
     document = make_document(data=damaged_pdf())
     # Pages left over from somewhere: a failed document must not keep any
     db.add(DocumentPage(document_id=document.id, page_number=1, text="old", char_count=3))
     db.commit()
 
-    process_document(document.id, fake_storage, session_factory)
+    process_document(document.id, fake_storage, fake_ai, session_factory)
 
     assert reload(db, document.id).error_code == "unreadable"
     assert pages_of(db, document.id) == []
 
 
 @pytest.mark.parametrize("problem", ["missing-file", "storage-down"])
-def test_storage_problems_fail_as_interrupted(db, register, make_document, session_factory, fake_storage, problem):
+def test_storage_problems_fail_as_interrupted(db, register, make_document, session_factory, fake_storage, problem, fake_ai):
     register()
     document = make_document(data=text_pdf([LONG_TEXT]))
     if problem == "missing-file":
@@ -202,15 +203,15 @@ def test_storage_problems_fail_as_interrupted(db, register, make_document, sessi
     else:
         fake_storage.fail_on = {"read"}
 
-    process_document(document.id, fake_storage, session_factory)
+    process_document(document.id, fake_storage, fake_ai, session_factory)
 
     document = reload(db, document.id)
     assert document.status == STATUS_FAILED and document.error_code == "interrupted"
     assert document.error_message == MESSAGES["interrupted"]
 
 
-def test_database_failure_while_saving_fails_the_document_and_logs_no_text(
-    db, register, make_document, session_factory, fake_storage, monkeypatch, caplog
+def test_database_failure_while_saving_ends_as_interrupted_and_logs_no_text(
+    db, register, make_document, session_factory, fake_storage, fake_ai, monkeypatch, caplog
 ):
     register()
     secret_text = "Confidential salary table for every employee"
@@ -221,13 +222,13 @@ def test_database_failure_while_saving_fails_the_document_and_logs_no_text(
         text = prepared.texts[0]
         raise IntegrityError(f"INSERT ... ({text})", {"text": text}, Exception(text))
 
-    monkeypatch.setattr(processing, "_finish_ready", broken_save)
+    monkeypatch.setattr(processing, "_save_prepared", broken_save)
 
     with caplog.at_level(logging.INFO):
-        process_document(document.id, fake_storage, session_factory)
+        process_document(document.id, fake_storage, fake_ai, session_factory)
 
     document = reload(db, document.id)
-    assert document.status == STATUS_FAILED and document.error_code == "unreadable"
+    assert document.status == STATUS_FAILED and document.error_code == "interrupted"
     assert "IntegrityError" in caplog.text
     assert secret_text not in caplog.text
     assert secret_text not in document.error_message
@@ -244,20 +245,20 @@ def test_logs_never_contain_document_text(db, upload, caplog):
 
 # --- Documents that changed meanwhile ---------------------------------------------------------
 
-def test_deleted_document_is_skipped_quietly(db, register, make_document, session_factory, fake_storage, caplog):
+def test_deleted_document_is_skipped_quietly(db, register, make_document, session_factory, fake_storage, caplog, fake_ai):
     register()
     document = make_document(data=text_pdf([LONG_TEXT]))
     db.execute(delete(Document).where(Document.id == document.id))
     db.commit()
 
     with caplog.at_level(logging.INFO):
-        process_document(document.id, fake_storage, session_factory)  # no error
+        process_document(document.id, fake_storage, fake_ai, session_factory)  # no error
 
     assert "skipped" in caplog.text
     assert db.scalar(select(func.count()).select_from(DocumentPage)) == 0
 
 
-def test_document_deleted_during_processing_keeps_no_pages(db, register, make_document, session_factory, fake_storage, monkeypatch):
+def test_document_deleted_during_processing_keeps_no_pages(db, register, make_document, session_factory, fake_storage, monkeypatch, fake_ai):
     register()
     document = make_document(data=text_pdf([LONG_TEXT]))
     real_read = fake_storage.read
@@ -271,18 +272,18 @@ def test_document_deleted_during_processing_keeps_no_pages(db, register, make_do
 
     monkeypatch.setattr(fake_storage, "read", read_then_user_deletes)
 
-    process_document(document.id, fake_storage, session_factory)  # no error
+    process_document(document.id, fake_storage, fake_ai, session_factory)  # no error
 
     assert db.scalar(select(func.count()).select_from(DocumentPage)) == 0
     assert db.scalar(select(func.count()).select_from(Document)) == 0
 
 
 @pytest.mark.parametrize("status", [STATUS_READY, STATUS_FAILED])
-def test_only_documents_still_processing_are_processed(db, register, make_document, session_factory, fake_storage, status):
+def test_only_documents_still_processing_are_processed(db, register, make_document, session_factory, fake_storage, status, fake_ai):
     register()
     document = make_document(data=text_pdf([LONG_TEXT]), status=status, error_code="unreadable" if status == STATUS_FAILED else None)
 
-    process_document(document.id, fake_storage, session_factory)
+    process_document(document.id, fake_storage, fake_ai, session_factory)
 
     assert reload(db, document.id).status == status  # untouched
     assert pages_of(db, document.id) == []
@@ -295,7 +296,7 @@ def make_aged(db, make_document, minutes_ago: int, status=STATUS_PROCESSING) -> 
     db.execute(
         update(Document)
         .where(Document.id == document.id)
-        .values(created_at=datetime.now(UTC) - timedelta(minutes=minutes_ago))
+        .values(updated_at=datetime.now(UTC) - timedelta(minutes=minutes_ago))
     )
     db.commit()
     return document
@@ -315,7 +316,7 @@ def test_stuck_documents_are_marked_interrupted(db, register, make_document, ses
     assert stuck.status == STATUS_FAILED
     assert stuck.error_code == "interrupted"
     assert stuck.error_message == MESSAGES["interrupted"]
-    assert pages_of(db, stuck.id) == []
+    assert len(pages_of(db, stuck.id)) == 1  # kept, so a retry resumes from there
     assert reload(db, recent.id).status == STATUS_PROCESSING  # may still finish
     assert reload(db, old_ready.id).status == STATUS_READY
 
@@ -373,7 +374,7 @@ def test_pdf_with_an_outline_gets_sections_from_the_outline(db, upload):
     assert [(by_section[c.section_id], c.page_start, c.page_end) for c in chunks] == [
         ("Welcome", 1, 1), ("Leave", 2, 2), ("Annual Leave", 3, 3),
     ]
-    assert all(c.embedding is None for c in chunks)  # embeddings arrive in stage 3
+    assert all(c.embedding is not None for c in chunks)  # stage 3 embedded them
 
 
 def test_pdf_without_an_outline_gets_sections_from_numbered_headings(db, upload):
@@ -405,7 +406,7 @@ def test_pdf_with_neither_gets_one_section_named_after_the_document(db, upload):
     assert "Plain text." in chunks[0].content and "More plain text." in chunks[0].content
 
 
-def test_failed_document_keeps_no_sections_or_chunks(db, register, make_document, session_factory, fake_storage):
+def test_failed_document_keeps_no_sections_or_chunks(db, register, make_document, session_factory, fake_storage, fake_ai):
     register()
     document = make_document(data=damaged_pdf())
     section = DocumentSection(document_id=document.id, position=0, title="Old", level=1, start_page=1, end_page=1)
@@ -414,7 +415,7 @@ def test_failed_document_keeps_no_sections_or_chunks(db, register, make_document
     db.add(DocumentChunk(document_id=document.id, section_id=section.id, position=0, page_start=1, page_end=1, content="old"))
     db.commit()
 
-    process_document(document.id, fake_storage, session_factory)
+    process_document(document.id, fake_storage, fake_ai, session_factory)
 
     assert reload(db, document.id).error_code == "unreadable"
     assert sections_of(db, document.id) == [] and chunks_of(db, document.id) == []

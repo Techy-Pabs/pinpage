@@ -12,9 +12,11 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
 from app.db.base import Base
-from app.dependencies import get_db, get_storage
+from app.dependencies import get_ai, get_db, get_storage
 from app.main import app
+from app.services import ai as ai_module
 from app.services import storage as storage_module
+from app.services.ai import FakeAI
 from app.services.storage import FakeStorage
 
 DEV_DATABASE_URL = make_url(settings.database_url)
@@ -110,6 +112,33 @@ def no_network_for_storage(monkeypatch):
     storage_module.default_storage.cache_clear()
     yield
     storage_module.default_storage.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def fake_ai():
+    """Used automatically by every test: fixed embeddings and replies.
+
+    Replaced through FastAPI's dependency overrides, like storage, so the
+    app has no test mode switch.
+    """
+    fake = FakeAI()
+    app.dependency_overrides[get_ai] = lambda: fake
+    yield fake
+    app.dependency_overrides.pop(get_ai, None)
+
+
+@pytest.fixture(autouse=True)
+def no_network_for_ai(monkeypatch):
+    """Safety net: if any test reaches the openai client's HTTP layer (a
+    real OpenRouter request), fail loudly instead of sending it."""
+
+    def network_call(*args, **kwargs):
+        raise RuntimeError("A test tried to reach OpenRouter")
+
+    monkeypatch.setattr("openai._base_client.SyncAPIClient.request", network_call)
+    ai_module.default_ai.cache_clear()
+    yield
+    ai_module.default_ai.cache_clear()
 
 
 @pytest.fixture

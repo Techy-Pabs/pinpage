@@ -120,15 +120,16 @@ def test_good_upload_returns_202_processing_and_stores_the_file(client, db, uplo
     assert document.sha256 == hashlib.sha256(pdf).hexdigest()
 
 
-def test_upload_schedules_processing_for_the_new_document(upload, auth_headers, monkeypatch, fake_storage):
+def test_upload_schedules_processing_for_the_new_document(upload, auth_headers, monkeypatch, fake_storage, fake_ai):
     scheduled = []
     monkeypatch.setattr(documents_router, "process_document", lambda *args: scheduled.append(args))
 
     response = upload(auth_headers())
 
-    [(document_id, storage, session_factory)] = scheduled
+    [(document_id, storage, ai, session_factory)] = scheduled
     assert document_id == uuid.UUID(response.json()["id"])
     assert storage is fake_storage  # the same storage the request used
+    assert ai is fake_ai  # and the same AI
     assert session_factory is not None  # its own sessions, not the request's
 
 

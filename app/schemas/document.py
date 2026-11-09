@@ -31,3 +31,13 @@ class PageResponse(BaseModel):
 class FileLinkResponse(BaseModel):
     url: str  # a signed link to the original PDF; anyone holding it can open it until it expires
     expires_in: int  # seconds
+
+
+class SectionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    number: str | None  # "4.2", "Section 4"; empty for a heading without one
+    title: str
+    level: int  # 1 is the top level
+    start_page: int
+    end_page: int

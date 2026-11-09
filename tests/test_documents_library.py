@@ -243,8 +243,8 @@ def test_deleting_while_processing_is_safe(client, db, alice, session_factory, f
     assert client.delete(f"/documents/{document_id}", headers=alice).status_code == 204
 
     # Now the held task runs: the row and file are gone, and it stops quietly
-    [(task_document_id, storage, factory)] = held
-    process_document(task_document_id, storage, factory)
+    [(task_document_id, storage, ai, factory)] = held
+    process_document(task_document_id, storage, ai, factory)
 
     assert count(db, Document) == 0
     assert count(db, DocumentPage) == 0

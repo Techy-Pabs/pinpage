@@ -26,6 +26,8 @@ services:
       R2_ACCESS_KEY_ID: test-access-key-id
       R2_SECRET_ACCESS_KEY: test-secret-access-key
       R2_BUCKET: pinpage-test
+      # The same for OpenRouter: a placeholder key, and tests use FakeAI
+      OPENROUTER_API_KEY: test-openrouter-key
     depends_on:
       db:
         condition: service_healthy

@@ -1,9 +1,13 @@
-"""Background processing of an uploaded document, in stages:
+"""Background processing of an uploaded document, in three stages:
 
 1. Extract pages: read the PDF from storage and extract each page's text.
 2. Find sections and build chunks (no AI requests).
+3. Create embeddings for the chunks (AI requests, batched and paced).
 
-Then the document is marked ready, or failed with a code.
+The document stays processing until all three finish, then becomes ready,
+or failed with a code. Stages 1 and 2 are saved together; stage 3 saves
+each batch as it goes. A retry resumes from the first unfinished stage:
+if chunks exist, only the chunks still missing an embedding are embedded.
 
 Logs here never contain document text or exception messages (a database
 error's message can include the page text it was saving); only ids, codes
@@ -17,13 +21,20 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from pypdf import PasswordType, PdfReader
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, exists, func, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import settings
 from app.models import Document, DocumentChunk, DocumentPage, DocumentSection
-from app.models.document import FAILURE_MESSAGES, STATUS_FAILED, STATUS_PROCESSING, STATUS_READY
-from app.services.chunking import ChunkDraft, build_chunks
+from app.models.document import (
+    FAILURE_MESSAGES,
+    RETRYABLE_CODES,
+    STATUS_FAILED,
+    STATUS_PROCESSING,
+    STATUS_READY,
+)
+from app.services.ai import AIClient, AIServiceError
+from app.services.chunking import ChunkDraft, build_chunks, embedding_input, section_label
 from app.services.sections import DocumentText, OutlineEntry, Section, detect_sections
 from app.services.storage import Storage, StorageError
 
@@ -182,7 +193,7 @@ def _add_prepared(db: Session, document_id: uuid.UUID, prepared: Prepared) -> No
     )
 
 
-# --- Recording the result -------------------------------------------------------------
+# --- Recording the results ------------------------------------------------------------
 
 def _lock_if_processing(db: Session, document_id: uuid.UUID) -> Document | None:
     """The document, locked until commit, but only if it is still processing.
@@ -194,25 +205,81 @@ def _lock_if_processing(db: Session, document_id: uuid.UUID) -> Document | None:
     )
 
 
-def _finish_ready(session_factory: sessionmaker, document_id: uuid.UUID, prepared: Prepared) -> None:
-    # One transaction: pages, sections, chunks and the ready status are
-    # saved together, or none of them
+def _save_prepared(session_factory: sessionmaker, document_id: uuid.UUID, prepared: Prepared) -> bool:
+    """Stages 1 and 2: pages, sections and chunks, saved together or not at
+    all. False if the document was deleted meanwhile."""
+    with session_factory() as db, db.begin():
+        if _lock_if_processing(db, document_id) is None:
+            logger.info("Document %s was deleted during processing; result dropped", document_id)
+            return False
+        _delete_prepared(db, document_id)
+        _add_prepared(db, document_id, prepared)
+    logger.info(
+        "Document %s: %d pages, %d sections, %d chunks",
+        document_id, len(prepared.texts), len(prepared.sections), len(prepared.chunks),
+    )
+    return True
+
+
+def _prepared_exists(session_factory: sessionmaker, document_id: uuid.UUID) -> bool:
+    """True if stages 1 and 2 finished: they save pages and chunks together,
+    so both exist. Anything else (e.g. leftovers) means starting over."""
+    with session_factory() as db:
+        return bool(db.scalar(select(
+            exists().where(DocumentChunk.document_id == document_id)
+            & exists().where(DocumentPage.document_id == document_id)
+        )))
+
+
+def _embed_missing(session_factory: sessionmaker, ai: AIClient, document_id: uuid.UUID, title: str) -> bool:
+    """Stage 3: embed every chunk still without an embedding, a batch at a
+    time, saving each batch. False if the document was deleted meanwhile.
+    Raises AIServiceError if a batch can't be embedded."""
+    batch_size = settings.embedding_batch_size
+    while True:
+        with session_factory() as db:
+            batch = db.execute(
+                select(DocumentChunk.id, DocumentChunk.content, DocumentSection.number, DocumentSection.title)
+                .join(DocumentSection, DocumentSection.id == DocumentChunk.section_id)
+                .where(DocumentChunk.document_id == document_id, DocumentChunk.embedding.is_(None))
+                .order_by(DocumentChunk.position)
+                .limit(batch_size)
+            ).all()
+        # No session is open while waiting for the AI
+        if not batch:
+            return True
+
+        texts = [
+            embedding_input(section_label(title, number, section_title), content)
+            for _, content, number, section_title in batch
+        ]
+        vectors = ai.embed_batch(texts, "document")
+        if len(vectors) != len(batch):
+            raise AIServiceError("missing embeddings")
+
+        with session_factory() as db, db.begin():
+            if _lock_if_processing(db, document_id) is None:
+                logger.info("Document %s was deleted during embedding; stopped", document_id)
+                return False
+            db.execute(
+                update(DocumentChunk),
+                [{"id": chunk_id, "embedding": vector} for (chunk_id, *_), vector in zip(batch, vectors)],
+            )
+
+
+def _finish_ready(session_factory: sessionmaker, document_id: uuid.UUID) -> None:
     with session_factory() as db, db.begin():
         document = _lock_if_processing(db, document_id)
         if document is None:
-            logger.info("Document %s was deleted during processing; result dropped", document_id)
             return
-        _delete_prepared(db, document_id)
-        _add_prepared(db, document_id, prepared)
         document.status = STATUS_READY
-        document.page_count = len(prepared.texts)
+        document.page_count = db.scalar(
+            select(func.count()).select_from(DocumentPage).where(DocumentPage.document_id == document_id)
+        )
         document.error_code = None
         document.error_message = None
         document.processed_at = datetime.now(UTC)
-    logger.info(
-        "Document %s is ready (%d pages, %d sections, %d chunks)",
-        document_id, len(prepared.texts), len(prepared.sections), len(prepared.chunks),
-    )
+    logger.info("Document %s is ready", document_id)
 
 
 def _finish_failed(session_factory: sessionmaker, document_id: uuid.UUID, code: str) -> None:
@@ -220,8 +287,11 @@ def _finish_failed(session_factory: sessionmaker, document_id: uuid.UUID, code: 
         document = _lock_if_processing(db, document_id)
         if document is None:
             return
-        # No pages, sections or chunks are kept for a failed document
-        _delete_prepared(db, document_id)
+        if code not in RETRYABLE_CODES:
+            # The file itself is the problem: no pages, sections or chunks
+            # are kept. Retryable failures keep what's done, so a retry
+            # resumes from the first unfinished stage.
+            _delete_prepared(db, document_id)
         document.status = STATUS_FAILED
         document.page_count = None
         document.error_code = code
@@ -231,8 +301,10 @@ def _finish_failed(session_factory: sessionmaker, document_id: uuid.UUID, code: 
 
 # --- The background task ------------------------------------------------------------------
 
-def process_document(document_id: uuid.UUID, storage: Storage, session_factory: sessionmaker) -> None:
-    """Runs after the upload response is sent.
+def process_document(
+    document_id: uuid.UUID, storage: Storage, ai: AIClient, session_factory: sessionmaker
+) -> None:
+    """Runs after the upload (or retry) response is sent.
 
     Opens its own sessions (never the request's, which is closed by now)
     and reads the file from storage by its key, not from memory, so a job
@@ -245,34 +317,47 @@ def process_document(document_id: uuid.UUID, storage: Storage, session_factory: 
                     Document.id == document_id, Document.status == STATUS_PROCESSING
                 )
             ).first()
-        # The session is closed here: nothing is held during the slow part
+        # The session is closed here: nothing is held during the slow parts
         if row is None:
             logger.info("Document %s is not waiting for processing; skipped", document_id)
             return
-
         key, title = row
+
+        # Stages 1 and 2, unless a previous run finished them
+        if not _prepared_exists(session_factory, document_id):
+            try:
+                data = storage.read(key)
+            except StorageError:
+                # Storage is down, or the file is gone (the user may have just
+                # deleted the document; then the row is gone too and this is a no-op)
+                logger.warning("Could not read the file of document %s", document_id)
+                _finish_failed(session_factory, document_id, "interrupted")
+                return
+            try:
+                extracted = extract_pages(data, settings.max_pages)
+            except ProcessingFailed as failure:
+                _finish_failed(session_factory, document_id, failure.code)
+                return
+            if not _save_prepared(session_factory, document_id, prepare(extracted, title)):
+                return
+
+        # Stage 3
         try:
-            data = storage.read(key)
-        except StorageError:
-            # Storage is down, or the file is gone (the user may have just
-            # deleted the document; then the row is gone too and this is a no-op)
-            logger.warning("Could not read the file of document %s", document_id)
-            # interrupted, not unreadable: the file itself may be fine
-            _finish_failed(session_factory, document_id, "interrupted")
+            if not _embed_missing(session_factory, ai, document_id, title):
+                return
+        except AIServiceError:
+            # Pages, sections, chunks and any finished batches are kept, so a
+            # retry only embeds what's missing
+            _finish_failed(session_factory, document_id, "ai_unavailable")
             return
 
-        try:
-            extracted = extract_pages(data, settings.max_pages)
-        except ProcessingFailed as failure:
-            _finish_failed(session_factory, document_id, failure.code)
-            return
-        _finish_ready(session_factory, document_id, prepare(extracted, title))
+        _finish_ready(session_factory, document_id)
     except Exception as error:
-        # Storage or the database failed. Only the type is logged: the
-        # message could contain page text from a failed INSERT.
+        # The database (or something unplanned) failed. Only the type is
+        # logged: the message could contain page text from a failed INSERT.
         logger.error("Processing document %s failed unexpectedly (%s)", document_id, type(error).__name__)
         try:
-            _finish_failed(session_factory, document_id, "unreadable")
+            _finish_failed(session_factory, document_id, "interrupted")
         except Exception as second:
             # Still processing; the startup check will mark it interrupted
             logger.error("Could not mark document %s as failed (%s)", document_id, type(second).__name__)
@@ -284,13 +369,15 @@ def mark_stuck_documents(session_factory: sessionmaker, timeout_minutes: int) ->
     """Documents still processing after the timeout can't finish any more
     (the server restarted mid task): mark them failed with interrupted.
 
-    Uses the database's clock, so the app's clock can't make it wrong.
+    Counted from updated_at, which an upload or a retry sets. What they had
+    finished is kept, so a retry resumes from there. Uses the database's
+    clock, so the app's clock can't make it wrong.
     """
     cutoff = func.now() - func.make_interval(0, 0, 0, 0, 0, timeout_minutes)
     with session_factory() as db, db.begin():
         stuck = db.scalars(
             update(Document)
-            .where(Document.status == STATUS_PROCESSING, Document.created_at < cutoff)
+            .where(Document.status == STATUS_PROCESSING, Document.updated_at < cutoff)
             .values(
                 status=STATUS_FAILED,
                 page_count=None,
@@ -300,8 +387,6 @@ def mark_stuck_documents(session_factory: sessionmaker, timeout_minutes: int) ->
             .returning(Document.id)
             .execution_options(synchronize_session=False)
         ).all()
-        for document_id in stuck:
-            _delete_prepared(db, document_id)
     if stuck:
         logger.warning("Marked %d stuck document(s) as interrupted", len(stuck))
     return len(stuck)

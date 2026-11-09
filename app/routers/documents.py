@@ -2,17 +2,18 @@ import logging
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response, status
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import settings
 from app.core.errors import ApiError
-from app.dependencies import get_current_user, get_db, get_session_factory, get_storage
-from app.models import Document, User
-from app.models.document import STATUS_PROCESSING, STATUS_READY
-from app.schemas.document import DocumentResponse, FileLinkResponse, PageResponse
+from app.dependencies import get_ai, get_current_user, get_db, get_session_factory, get_storage
+from app.models import Document, DocumentSection, User, Workspace
+from app.models.document import RETRYABLE_CODES, STATUS_FAILED, STATUS_PROCESSING, STATUS_READY
+from app.schemas.document import DocumentResponse, FileLinkResponse, PageResponse, SectionResponse
 from app.services import documents as docs
+from app.services.ai import AIClient
 from app.services.processing import process_document
 from app.services.storage import UNAVAILABLE_MESSAGE, Storage, StorageError, document_key
 from app.services.uploads import Upload, UploadInvalid, UploadTooLarge, read_upload
@@ -107,6 +108,15 @@ def document_not_ready() -> ApiError:
     )
 
 
+def retry_not_allowed() -> ApiError:
+    return ApiError(
+        status.HTTP_409_CONFLICT,
+        "retry_not_allowed",
+        "Only documents that failed because processing was interrupted or the AI was unavailable "
+        "can be retried. Upload the file again in a fixed form instead.",
+    )
+
+
 def page_not_found() -> ApiError:
     return ApiError(status.HTTP_404_NOT_FOUND, "page_not_found", "This document has no such page.")
 
@@ -152,6 +162,7 @@ def upload_document(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     storage: Storage = Depends(get_storage),
+    ai: AIClient = Depends(get_ai),
     session_factory: sessionmaker = Depends(get_session_factory),
 ):
     """Upload one PDF as a multipart form: file, and an optional title (the
@@ -228,7 +239,7 @@ def upload_document(
     db.refresh(document)  # created_at and updated_at come from the database
 
     # Step 6: runs after the response is sent, with its own sessions
-    background_tasks.add_task(process_document, document.id, storage, session_factory)
+    background_tasks.add_task(process_document, document.id, storage, ai, session_factory)
     return document
 
 
@@ -289,6 +300,58 @@ def get_page(
         text=page.text,
         char_count=page.char_count,
     )
+
+
+@router.get("/{document_id}/sections", response_model=list[SectionResponse], summary="List the sections")
+def list_sections(document: Document = Depends(visible_document), db: Session = Depends(get_db)):
+    """The sections found in a ready document, in order: from the PDF's
+    outline, else its numbered headings, else one section named after the
+    document. Each covers start_page to end_page (409 document_not_ready
+    before the document is ready)."""
+    if document.status != STATUS_READY:
+        raise document_not_ready()
+    return db.scalars(
+        select(DocumentSection).where(DocumentSection.document_id == document.id).order_by(DocumentSection.position)
+    ).all()
+
+
+@router.post(
+    "/{document_id}/retry",
+    response_model=DocumentResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Retry processing",
+)
+def retry_document(
+    background_tasks: BackgroundTasks,
+    document: Document = Depends(visible_document),
+    db: Session = Depends(get_db),
+    storage: Storage = Depends(get_storage),
+    ai: AIClient = Depends(get_ai),
+    session_factory: sessionmaker = Depends(get_session_factory),
+):
+    """Restarts processing for a document that failed with interrupted or
+    ai_unavailable, from the first unfinished stage: a document whose
+    embeddings failed only redoes the embeddings. Any other status or code
+    gets 409 retry_not_allowed, because the same file would fail the same
+    way. Answers 202 with status processing; check GET /documents/{id}."""
+    # The workspace lock first, as in upload: the retried document counts
+    # toward the limit again, and two requests must not both pass the check
+    db.execute(select(Workspace.id).where(Workspace.id == document.workspace_id).with_for_update())
+    db.refresh(document, with_for_update=True)  # read its status again, locked
+    if document.status != STATUS_FAILED or document.error_code not in RETRYABLE_CODES:
+        raise retry_not_allowed()
+    if docs.count_counted_documents(db, document.workspace_id) >= settings.max_documents_per_workspace:
+        raise document_limit_reached()
+
+    document.status = STATUS_PROCESSING
+    document.error_code = None
+    document.error_message = None
+    document.processed_at = None
+    db.commit()
+    db.refresh(document)
+
+    background_tasks.add_task(process_document, document.id, storage, ai, session_factory)
+    return document
 
 
 @router.get("/{document_id}/file", response_model=FileLinkResponse, summary="Get a link to the original PDF")
