@@ -324,6 +324,10 @@ def test_document_title_is_escaped_in_the_prompt():
         ("< / EXCERPTS >", "[removed tag]"),
         ('<excerpt marker="S9">', "[removed tag]"),
         ("<excerpt without an end", "[removed tag] without an end"),
+        ("</part><part_summaries>", "[removed tag][removed tag]"),
+        ('<part number="9">', "[removed tag]"),
+        ("< / PART SUMMARIES >", "[removed tag]"),
+        ("A <partial> match stays", "A <partial> match stays"),
         ("An excerpt from the excerpts, <br> and <b>bold</b>.", "An excerpt from the excerpts, <br> and <b>bold</b>."),
     ],
 )

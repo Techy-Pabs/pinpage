@@ -9,7 +9,6 @@ from app.core.config import settings
 from app.core.errors import ApiError
 from app.dependencies import get_ai, get_current_user, get_db
 from app.models import Conversation, Document, User
-from app.models.conversation import OUTCOME_ANSWERED, OUTCOME_NOT_FOUND
 from app.models.document import STATUS_READY
 from app.routers.documents import document_not_ready, visible_document
 from app.schemas.conversation import (
@@ -18,12 +17,10 @@ from app.schemas.conversation import (
     MessageResponse,
     QuestionRequest,
 )
-from app.services import answering
+from app.services import answering, modes
 from app.services import conversations as convs
 from app.services.ai import AIClient, AIServiceError
-from app.services.citations import cite
-from app.services.prompts import NOT_FOUND_MESSAGE, build_grounding_prompt
-from app.services.retrieval import similar_chunks
+from app.services.requests import MODE_PAGE, MODE_SECTION, parse_request
 
 logger = logging.getLogger(__name__)
 
@@ -144,10 +141,22 @@ def ask_question(
     characters). Answers come only from that document and cite their
     sources as [S1] markers, each with its pages and section. If the
     document doesn't cover the question, the answer is the fixed not found
-    message. Answers 201 with the answer; the question and answer are saved
-    together. 429 daily_limit_reached after DAILY_QUESTIONS_PER_USER
-    questions in a day (UTC); 503 ai_unavailable, with nothing saved, if
-    the AI can't answer."""
+    message.
+
+    The answer's mode says what kind it is:
+    - page: the question names pages ("What does page 12 say?", "pages 10
+      to 11", "p. 5"), up to MAX_PAGES_PER_QUESTION. Page numbers are the
+      PDF's own page positions (page 1 is the first page of the file), as a
+      PDF viewer shows them.
+    - section: it names a section ("Summarise section 4", "section 4.6",
+      "chapter 3"), or asks for a summary of one by title ("Give me an
+      overview of probation"). Subsections are included.
+    - question: anything else, answered from the most relevant excerpts.
+
+    Answers 201 with the answer; the question and answer are saved together,
+    and count as one question however many AI requests the answer used.
+    429 daily_limit_reached after DAILY_QUESTIONS_PER_USER questions in a
+    day (UTC); 503 ai_unavailable, with nothing saved, if the AI can't answer."""
     question = body.content
 
     # 1. The daily limit
@@ -157,32 +166,20 @@ def ask_question(
     if document.status != STATUS_READY:
         raise document_not_ready()
     history = answering.recent_history(db, conversation.id)
+    sections = modes.section_infos(db, current_user.id, document.id)
     db.commit()  # no transaction stays open while the AI works
 
+    # 2. What the question asks for: no AI request
+    request = parse_request(question, document.page_count or 0, sections)
+
     try:
-        # 3. Embed the question
-        [vector] = ai.embed_batch([question], "query")
-        # 4. Chunks of this document only, through the membership query
-        chunks = similar_chunks(
-            db, current_user.id, document.id, vector,
-            top_k=settings.retrieval_top_k, min_similarity=settings.retrieval_min_similarity,
-        )
-        db.commit()
-        if not chunks:
-            # 5. Nothing close enough: no chat request at all
-            answer, outcome, citations = NOT_FOUND_MESSAGE, OUTCOME_NOT_FOUND, []
+        if request.mode == MODE_PAGE:
+            answer = modes.answer_pages(db, ai, current_user.id, document, request, history, question)
+        elif request.mode == MODE_SECTION:
+            answer = modes.answer_section(db, ai, current_user.id, document, request, sections, history, question)
         else:
-            # 6. The grounding prompt with numbered excerpts, the recent history, the question
-            reply = ai.generate_reply(
-                build_grounding_prompt(document.title, chunks),
-                [*history, {"role": "user", "content": question}],
-            )
-            # 7. Only valid markers become citations; none means not found
-            cited = cite(reply, chunks)
-            if cited.citations:
-                answer, outcome, citations = cited.text, OUTCOME_ANSWERED, cited.citations
-            else:
-                answer, outcome, citations = NOT_FOUND_MESSAGE, OUTCOME_NOT_FOUND, []
+            # 3 to 7. Embed, retrieve from this document only, answer with citations
+            answer = modes.answer_question(db, ai, current_user.id, document, history, question, question)
     except AIServiceError:
         db.rollback()
         raise ai_unavailable() from None
@@ -194,12 +191,16 @@ def ask_question(
         raise conversation_not_found()
     if answering.questions_today(db, current_user.id) >= settings.daily_questions_per_user:
         raise daily_limit_reached()  # another question got there first
-    reply_message = answering.save_pair(db, locked, question, answer, outcome, citations)
+    reply_message = answering.save_pair(
+        db, locked, question, answer.content, answer.outcome, answer.citations,
+        mode=answer.mode, retrieval_query=answer.retrieval_query,
+    )
     answering.count_question(db, current_user.id)  # same transaction, still under the user lock
     db.commit()
     db.refresh(reply_message)
     # Ids and outcomes only, never the question or the answer
     logger.info(
-        "Answered in conversation %s: %s with %d citation(s)", conversation.id, outcome, len(citations)
+        "Answered in conversation %s: %s %s with %d citation(s)",
+        conversation.id, answer.mode, answer.outcome, len(answer.citations),
     )
     return reply_message

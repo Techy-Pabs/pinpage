@@ -25,6 +25,7 @@ def no_settings_from_environment(monkeypatch):
         "CHUNK_SIZE", "CHUNK_OVERLAP",
         "LANGCHAIN_TRACING_V2", "LANGSMITH_TRACING", "LANGSMITH_TRACING_V2", "LANGCHAIN_TRACING",
         "RETRIEVAL_TOP_K", "RETRIEVAL_MIN_SIMILARITY", "DAILY_QUESTIONS_PER_USER",
+        "MAX_PAGES_PER_QUESTION", "SUMMARY_PART_CHARS", "SUMMARY_MAX_PARTS", "REWRITE_FOLLOW_UPS",
         *R2_VARIABLES,
     ]:
         monkeypatch.delenv(name, raising=False)
@@ -224,5 +225,22 @@ def test_answer_settings_default_to_6_chunks_0_30_and_20_questions():
     [{"retrieval_top_k": 0}, {"retrieval_top_k": 21}, {"retrieval_min_similarity": 1.5}, {"daily_questions_per_user": 0}],
 )
 def test_impossible_answer_settings_refuse_to_start(changes):
+    with pytest.raises(ValidationError):
+        make(**changes)
+
+
+def test_page_and_summary_settings_default_to_3_pages_12000_characters_and_4_parts():
+    settings = make()
+
+    assert settings.max_pages_per_question == 3
+    assert (settings.summary_part_chars, settings.summary_max_parts) == (12000, 4)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [{"max_pages_per_question": 0}, {"max_pages_per_question": 11}, {"summary_part_chars": 500},
+     {"summary_max_parts": 0}, {"summary_max_parts": 11}],
+)
+def test_impossible_page_and_summary_settings_refuse_to_start(changes):
     with pytest.raises(ValidationError):
         make(**changes)

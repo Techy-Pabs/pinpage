@@ -16,6 +16,7 @@ This repository has **Milestones 1 and 2**. You can register, upload a PDF, watc
   Then the document is `ready`. If it can't be, it is `failed` with a reason you can show the user: too many pages, password protected, a scan with no text, a damaged file, an interruption, or the AI being unavailable.
 - **Retry.** A document that failed through no fault of the file (`interrupted` or `ai_unavailable`) can be retried. It resumes from the first unfinished stage: if only the embeddings failed, only they are redone.
 - **Library.** List your documents, check one's status, read any page, list its sections, get a link to the original file, or delete it.
+- **Pages and sections.** Ask about pages ("What does page 12 say?", "pages 10 to 11", up to 3 at a time) and Pinpage reads those whole pages; ask for a summary of a section ("Summarise section 4", "Give me an overview of probation") and it reads the whole section with its subsections, in parts if it is long. Page numbers are the PDF's own page positions (page 1 is the first page of the file), as a PDF viewer shows them. Recognising these requests costs no AI request, and a page out of range or a section that doesn't exist is answered without one.
 - **Questions.** Start a conversation with a ready document and ask questions about it. Pinpage finds the most relevant chunks of that document only, sends them to the chat model as numbered excerpts (`[S1]`, `[S2]`...) with their pages and section, and keeps only citations that point to a real excerpt. An answer with no valid citation, or a question no chunk is close enough to, gets the fixed not found answer (the second without asking the chat model at all). Conversations are private to the person who started them.
 - **Ownership.** Every document belongs to a workspace, and every query checks your membership inside the query itself. Someone else's document gets the same `404` as one that doesn't exist.
 
@@ -64,7 +65,7 @@ Every document endpoint needs a login (`Authorization: Bearer <token>`). Swagger
 
 Every error uses one shape: `{"error": {"code": "...", "message": "..."}}`. A `duplicate_document` error also carries `existing_document` with that document's `id` and `status`.
 
-An answer is a message with `outcome` (`answered` or `not_found`) and `citations`, each with `marker`, `page_start`, `page_end`, `section_number`, `section_title` and a `snippet` of up to 200 characters. The not found answer is always: *I couldn't find this in the document. Try rephrasing, or ask about a specific section.*
+An answer is a message with `mode` (`question`, `page` or `section`), `outcome` (`answered` or `not_found`) and `citations`, each with `marker`, `page_start`, `page_end`, `section_number`, `section_title` and a `snippet` of up to 200 characters. The not found answer is always: *I couldn't find this in the document. Try rephrasing, or ask about a specific section.*
 
 A document in a response has: `id`, `title`, `original_filename`, `size_bytes`, `page_count`, `status`, `error_code`, `error_message`, `created_at` and `processed_at`. It never includes the storage key, the file's fingerprint or workspace ids.
 
@@ -99,6 +100,9 @@ All set in `.env`, so they change without code changes:
 | `RETRIEVAL_TOP_K` | 6 | Excerpts of the document sent with a question at most |
 | `RETRIEVAL_MIN_SIMILARITY` | 0.30 | How similar an excerpt must be to be used (ShopAssist's tuned value) |
 | `DAILY_QUESTIONS_PER_USER` | 20 | Questions per user per day, counted in UTC (429 after that) |
+| `MAX_PAGES_PER_QUESTION` | 3 | Pages read for one page question; more are cut, with a note in the answer |
+| `SUMMARY_PART_CHARS` | 12000 | Characters per summary part; a longer section is summarised in parts, then combined |
+| `SUMMARY_MAX_PARTS` | 4 | Parts one summary may use (so at most 5 requests); above that, Pinpage suggests the subsections instead. A summary counts as one question |
 
 The AI models and the other AI settings are in `.env.example`, with the values ShopAssist uses. The free daily OpenRouter allowance is shared by everything on your account, including the live ShopAssist demo.
 

@@ -82,6 +82,13 @@ class Settings(BaseSettings):
     # Questions per user per day (UTC), to protect the shared free allowance
     daily_questions_per_user: int = Field(default=20, gt=0)
 
+    # Page questions: at most this many pages per question
+    max_pages_per_question: int = Field(default=3, gt=0, le=10)
+    # Section summaries: characters per summary part, and at most this many
+    # parts (so one summary uses at most SUMMARY_MAX_PARTS + 1 requests)
+    summary_part_chars: int = Field(default=12000, ge=2000, le=50000)
+    summary_max_parts: int = Field(default=4, gt=0, le=10)
+
     # LangSmith (which comes with LangChain's text splitter) sends traces,
     # including document text, to LangChain's servers if any of these is
     # true. Pinpage must never do that, so the app refuses to start instead.
