@@ -41,7 +41,7 @@ Before retrieval, a small parser reads the question and decides its **mode**:
 | --- | --- | --- |
 | page | "page N", "pages N to M", "pages N-M", "pages N and M", "p. N" | What does page 12 say? Summarise pages 10 to 11 |
 | section | "section N", "section N.N", "chapter N", "part N" with a number that matches a detected section | Summarise section 4. What does section 4.6 say? |
-| section | a summary verb ("summarise", "summarize", "summary of", "overview of", "explain") plus a title that matches a section | Summarise the leave policy. Give me an overview of probation |
+| section | a summary verb ("summarise", "summarize", "summary of", "overview of"; "explain" was dropped, see decision 7) plus a title that matches a section | Summarise the leave policy. Give me an overview of probation |
 | question | anything else | How long is paternity leave? |
 
 **Title matching:** a section matches when every meaningful word of its title (ignoring "the", "and", "of", "policy", "section") appears in the question, case insensitive, ignoring simple plural s. If several sections match, choose the one with the longest title; if still tied, choose the higher level (4 before 4.1).
@@ -156,3 +156,17 @@ Run the rebuild command on the Lantern Hill handbook, then in one conversation:
 - [ ] The rebuild command fixes the handbook's sections without re-embedding
 - [ ] Every row of the manual check behaves as expected
 - [ ] No commit mentions Claude, and no secret is in the Git history
+
+## Decisions from slice reviews
+
+Where this section disagrees with anything above, this section wins.
+
+1. Long sections are summarised part by part, then joined by a combine prompt: it uses only the part summaries, keeps their markers exactly, and follows the same 8 line rules. The server validates the final markers as for any answer.
+2. The 3 line top of page rule applies to bookmark sections only. Headings found in the text keep the earlier rule (nothing but whitespace before the heading on its page).
+3. Front matter also applies to documents without bookmarks: whenever the first section starts after page 1.
+4. Any out of range page makes the whole answer the out of range message, even if other pages in the question exist.
+5. Page and section answers skip the embedding request: they read pages or sections directly, without retrieval.
+6. Part summaries get the question only, not the conversation history; the single summary request and the combine request get the history as well.
+7. "explain" is not a summary verb, so "Explain how sick pay works" is answered as an ordinary question. The summary verbs are summarise, summarize, summary of and overview of.
+8. `rebuild-sections` reads the PDF from storage for its outline, because bookmarks are not stored; the pages still come from the database. If storage is unavailable, it refuses and changes nothing.
+9. In Milestone 4, add an overall time limit per answer, so a long summary (up to 5 requests, each with up to 2 attempts) cannot hold a request open for minutes.

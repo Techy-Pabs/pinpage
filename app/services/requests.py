@@ -20,7 +20,9 @@ MODE_SECTION = "section"
 # Words that don't make a title match ("the leave policy" is "leave")
 TITLE_STOPWORDS = {"the", "and", "of", "policy", "section"}
 
-SUMMARY_VERBS = re.compile(r"\b(?:summari[sz]e|summary\s+of|overview\s+of|explain)\b", re.IGNORECASE)
+# "explain" is deliberately not one: "Explain how sick pay works" is a
+# question for retrieval, not a request to summarise the Sick Leave section
+SUMMARY_VERBS = re.compile(r"\b(?:summari[sz]e|summary\s+of|overview\s+of)\b", re.IGNORECASE)
 
 _NUMBER = r"(\d{1,6})"
 # "pages 10 to 11", "pages 10-11", "pages 10 – 11", "pp. 10-11"

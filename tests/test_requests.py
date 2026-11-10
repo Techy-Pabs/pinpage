@@ -128,7 +128,7 @@ def test_words_that_only_look_like_references(question):
         ("Give me an overview of probation", "Probation"),
         ("summarize the sick leave section", "Sick Leave"),  # longest title wins over "Leave"
         ("A summary of public holidays", "Public Holidays"),
-        ("Explain the public holiday rules", "Public Holidays"),  # plural s ignored
+        ("Summarise the public holiday rules", "Public Holidays"),  # plural s ignored
         ("Summarise recruitment and induction", "Recruitment and Induction"),
         ("Overview of the annual leaves", "Annual Leave"),
     ],
@@ -153,6 +153,13 @@ def test_every_meaningful_title_word_must_be_there():
 
 def test_a_title_without_a_summary_verb_is_a_question():
     assert parse("How long is probation?").mode == MODE_QUESTION
+
+
+@pytest.mark.parametrize(
+    "question", ["Explain how sick pay works", "Can you explain the public holidays rules?", "explain probation"]
+)
+def test_explain_is_not_a_summary_verb(question):
+    assert parse(question).mode == MODE_QUESTION
 
 
 def test_front_matter_is_never_matched():
