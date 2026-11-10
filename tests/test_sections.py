@@ -139,12 +139,13 @@ def test_keyword_and_capitals_headings():
     ]
 
 
-def test_text_before_the_first_heading_gets_a_section_named_after_the_document():
-    doc = DocumentText([f"Welcome to the school. {FILLER}", f"1. Admissions\n{FILLER}"])
+def test_text_before_a_first_heading_on_page_1_gets_a_section_named_after_the_document():
+    doc = DocumentText([f"Welcome to the school. {FILLER}\n1. Admissions\n{FILLER}"])
 
     sections = detect_sections(doc, [], "Parent Guide")
 
-    assert summary(sections) == [(None, "Parent Guide", 1, 1, 1), ("1", "Admissions", 1, 2, 2)]
+    assert summary(sections) == [(None, "Parent Guide", 1, 1, 1), ("1", "Admissions", 1, 1, 1)]
+    assert [s.kind for s in sections] == ["body", "body"]
 
 
 TOPICS = ["Welcome", "Pay", "Leave", "Conduct", "Safety"]
@@ -201,3 +202,92 @@ def test_numbered_keyword_headings_on_every_page_are_kept():
     sections = detect_sections(DocumentText(pages), [], "Handbook")
 
     assert [s.number for s in sections] == [f"Chapter {n}" for n in range(1, 6)]
+
+
+# --- Milestone 3: outline section ends and front matter --------------------------------------
+
+def kinds(sections):
+    return [(s.title, s.kind, s.start_page, s.end_page) for s in sections]
+
+
+def test_outline_section_ends_on_the_page_before_when_the_next_starts_at_the_top():
+    # As in the Lantern Hill handbook: a running header comes first on every
+    # page, so the heading is the second line, not the very first text
+    pages = [
+        f"STAFF HANDBOOK\n1. Introduction\n{FILLER}",
+        f"STAFF HANDBOOK\n{FILLER}",
+        f"STAFF HANDBOOK\n2. Pay\n{FILLER}",
+    ]
+    outline = [OutlineEntry("1 Introduction", 1, 1), OutlineEntry("2 Pay", 1, 3)]
+
+    sections = detect_sections(DocumentText(pages), outline, "Handbook")
+
+    assert summary(sections) == [("1", "Introduction", 1, 1, 2), ("2", "Pay", 1, 3, 3)]
+
+
+def test_outline_heading_found_mid_page_keeps_the_same_page():
+    pages = [
+        f"1. Introduction\n{FILLER}",
+        f"{FILLER}\n{FILLER}\n{FILLER}\n2. Pay\n{FILLER}",  # the heading is the 4th line
+    ]
+    outline = [OutlineEntry("1 Introduction", 1, 1), OutlineEntry("2 Pay", 1, 2)]
+
+    sections = detect_sections(DocumentText(pages), outline, "Handbook")
+
+    assert summary(sections) == [("1", "Introduction", 1, 1, 2), ("2", "Pay", 1, 2, 2)]
+
+
+def test_outline_heading_not_found_on_its_page_keeps_the_old_behaviour():
+    pages = [f"1. Introduction\n{FILLER}", f"{FILLER}"]  # page 2 never shows "Pay"
+    outline = [OutlineEntry("1 Introduction", 1, 1), OutlineEntry("2 Pay", 1, 2)]
+
+    sections = detect_sections(DocumentText(pages), outline, "Handbook")
+
+    assert summary(sections)[0] == ("1", "Introduction", 1, 1, 2)  # ends on the next one's start page
+
+
+def test_a_subsection_starting_at_the_top_of_a_page_ends_its_sibling_on_the_page_before():
+    pages = [f"4. Leave\n{FILLER}\n4.1 Annual\n{FILLER}", f"4.2 Sick\n{FILLER}", f"5. Pay\n{FILLER}"]
+    outline = [OutlineEntry("4 Leave", 1, 1), OutlineEntry("4.1 Annual", 2, 1), OutlineEntry("4.2 Sick", 2, 2),
+               OutlineEntry("5 Pay", 1, 3)]
+
+    sections = detect_sections(DocumentText(pages), outline, "Handbook")
+
+    assert summary(sections) == [
+        ("4", "Leave", 1, 1, 2), ("4.1", "Annual", 2, 1, 1), ("4.2", "Sick", 2, 2, 2), ("5", "Pay", 1, 3, 3),
+    ]
+
+
+def test_front_matter_when_the_first_section_starts_after_page_1():
+    pages = ["Staff Handbook\nEdition 4", f"Contents\n1 Introduction ..... 3\n2 Pay ..... 4",
+             f"1. Introduction\n{FILLER}", f"2. Pay\n{FILLER}"]
+    outline = [OutlineEntry("1 Introduction", 1, 3), OutlineEntry("2 Pay", 1, 4)]
+
+    sections = detect_sections(DocumentText(pages), outline, "Handbook")
+
+    assert kinds(sections) == [
+        ("Front matter", "front_matter", 1, 2),
+        ("Introduction", "body", 3, 3),
+        ("Pay", "body", 4, 4),
+    ]
+    assert sections[0].number is None and sections[0].level == 1
+
+
+def test_front_matter_from_headings_in_the_text_too():
+    pages = ["A cover page with only a title on it", f"1. Introduction\n{FILLER}"]
+
+    sections = detect_sections(DocumentText(pages), [], "Handbook")
+
+    assert kinds(sections) == [("Front matter", "front_matter", 1, 1), ("Introduction", "body", 2, 2)]
+
+
+def test_no_front_matter_when_the_first_section_starts_on_page_1():
+    pages = [f"1. Introduction\n{FILLER}", f"2. Pay\n{FILLER}"]
+
+    assert all(s.kind == "body" for s in detect_sections(DocumentText(pages), [], "Handbook"))
+
+
+def test_no_headings_means_no_front_matter():
+    sections = detect_sections(DocumentText([FILLER, FILLER]), [], "Visitor Policy")
+
+    assert kinds(sections) == [("Visitor Policy", "body", 1, 2)]

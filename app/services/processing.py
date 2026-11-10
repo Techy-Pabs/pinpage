@@ -175,6 +175,7 @@ def _add_prepared(db: Session, document_id: uuid.UUID, prepared: Prepared) -> No
             level=section.level,
             start_page=section.start_page,
             end_page=section.end_page,
+            kind=section.kind,
         )
         for position, section in enumerate(prepared.sections)
     ]

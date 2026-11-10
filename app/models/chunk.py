@@ -22,6 +22,7 @@ class DocumentSection(Base):
         CheckConstraint("position >= 0", name="position_not_negative"),
         CheckConstraint("level > 0", name="level_positive"),
         CheckConstraint("start_page > 0 AND end_page >= start_page", name="pages_valid"),
+        CheckConstraint("kind IN ('body', 'front_matter')", name="kind_valid"),
         UniqueConstraint("document_id", "position"),
     )
 
@@ -35,6 +36,9 @@ class DocumentSection(Base):
     start_page: Mapped[int] = mapped_column(Integer)
     # Up to where the next section at the same or a higher level starts
     end_page: Mapped[int] = mapped_column(Integer)
+    # body, or front_matter for the pages before the first section (excluded
+    # from retrieval and summaries; page questions can still read them)
+    kind: Mapped[str] = mapped_column(String(20), default="body", server_default="body")
 
 
 class DocumentChunk(Base):

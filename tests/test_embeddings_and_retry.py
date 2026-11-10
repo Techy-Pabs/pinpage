@@ -306,7 +306,7 @@ def test_sections_of_a_ready_document_in_order(client, alice, upload):
 
     assert response.status_code == 200
     assert response.json() == [
-        {"number": str(n), "title": f"Topic {name}", "level": 1, "start_page": n, "end_page": n}
+        {"number": str(n), "title": f"Topic {name}", "level": 1, "start_page": n, "end_page": n, "kind": "body"}
         for n, name in enumerate(["Welcome", "Pay", "Leave", "Conduct", "Safety"], start=1)
     ]
 

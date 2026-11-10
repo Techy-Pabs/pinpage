@@ -17,6 +17,16 @@ logger = logging.getLogger(__name__)
 PAGE_SEPARATOR = "\n\n"
 
 MAX_TITLE_LENGTH = 500
+
+KIND_BODY = "body"
+# The pages before the first section (cover, contents): kept, but never used
+# for retrieval or summaries, since a contents page matches many questions weakly
+KIND_FRONT_MATTER = "front_matter"
+FRONT_MATTER_TITLE = "Front matter"
+
+# An outline heading is at the top of its page if its text is in this many
+# first lines of the page (ignoring running headers)
+TOP_OF_PAGE_LINES = 3
 MAX_NUMBER_LENGTH = 50
 # More candidates than this means the "headings" are really list items
 MAX_SECTIONS = 300
@@ -56,6 +66,7 @@ class Section:
     # text stops where the next section of any level starts)
     start_offset: int
     end_offset: int
+    kind: str = KIND_BODY
 
 
 class DocumentText:
@@ -90,6 +101,9 @@ class _Heading:
     number: str | None
     title: str
     rank: float  # a raw level; turned into 1, 2, 3... afterwards
+    # True if the heading starts its page, so the section before ends on the
+    # page before
+    at_top: bool = False
 
 
 def _clean(text: str, limit: int) -> str:
@@ -179,14 +193,16 @@ def headings_from_text(doc: DocumentText, repeated: set[str]) -> list[_Heading]:
             if parsed and _repeat_key(line) not in repeated:
                 number, title, rank = parsed
                 offset = position + (len(line) - len(line.lstrip()))
-                headings.append(_Heading(offset, number, _clean(title, MAX_TITLE_LENGTH), rank))
+                headings.append(_Heading(
+                    offset, number, _clean(title, MAX_TITLE_LENGTH), rank, at_top=doc.starts_its_page(offset)
+                ))
             position += len(line)
     return headings
 
 
 # --- Headings from the outline -------------------------------------------------------
 
-def headings_from_outline(doc: DocumentText, outline: list[OutlineEntry]) -> list[_Heading]:
+def headings_from_outline(doc: DocumentText, outline: list[OutlineEntry], repeated: set[str]) -> list[_Heading]:
     headings = []
     for entry in outline:
         if not 1 <= entry.page <= doc.page_count:
@@ -198,17 +214,52 @@ def headings_from_outline(doc: DocumentText, outline: list[OutlineEntry]) -> lis
         parsed = parse_heading(title)
         if parsed and parsed[0]:
             number, title = parsed[0], parsed[1]
-        headings.append(_Heading(_find_on_page(doc, entry.page, entry.title), number, title, entry.level))
+        # The page may show the title with or without its number
+        candidates = [entry.title, title]
+        headings.append(_Heading(
+            _find_on_page(doc, entry.page, candidates), number, title, entry.level,
+            at_top=any(_near_top_of_page(doc, entry.page, c, repeated) for c in candidates),
+        ))
     return headings
 
 
-def _find_on_page(doc: DocumentText, page: int, title: str) -> int:
-    """Where the outline entry's title appears on its page, or the page start."""
+def _words(text: str) -> str:
+    """Lowercase letters and digits only, so "4.2 Annual Leave" and
+    "4.2. ANNUAL LEAVE" compare equal."""
+    return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def _near_top_of_page(doc: DocumentText, page: int, title: str, repeated: set[str]) -> bool:
+    """True if the outline entry's title is in the first TOP_OF_PAGE_LINES
+    non-empty lines of its page, not counting running headers. Not found
+    means False: the section before then ends on this page."""
+    wanted = _words(title)
+    if not wanted:
+        return False
+    lines = [
+        line for line in doc.pages[page - 1].splitlines()
+        if line.strip() and _repeat_key(line) not in repeated
+    ][:TOP_OF_PAGE_LINES]
+    for line in lines:
+        found = _words(line)
+        # The title may be on one line, or wrap with its first part on this one
+        if found and (wanted in found or (len(found) >= 3 and wanted.startswith(found))):
+            return True
+    return False
+
+
+def _find_on_page(doc: DocumentText, page: int, titles: list[str]) -> int:
+    """The start of the line where the outline entry's title first appears
+    on its page, or the page start. The whole line, so "1. Introduction"
+    starts at the "1", not at the title words."""
     start = doc.page_starts[page - 1]
-    page_text = doc.pages[page - 1]
-    needle = " ".join(title.split())[:40].lower()
-    found = page_text.lower().find(needle) if needle else -1
-    return start + found if found >= 0 else start
+    page_text = doc.pages[page - 1].lower()
+    for title in titles:
+        needle = " ".join(title.split())[:40].lower()
+        found = page_text.find(needle) if needle else -1
+        if found >= 0:
+            return start + page_text.rfind("\n", 0, found) + 1
+    return start
 
 
 # --- Building the sections ------------------------------------------------------------
@@ -223,37 +274,53 @@ def _has_own_text(text: str, repeated: set[str]) -> bool:
     return any(line.strip() and _repeat_key(line) not in repeated for line in text.splitlines())
 
 
+@dataclass
+class _Item:
+    offset: int
+    number: str | None
+    title: str
+    level: int
+    at_top: bool
+    kind: str = KIND_BODY
+
+
 def _build(doc: DocumentText, headings: list[_Heading], title: str, repeated: set[str]) -> list[Section]:
     headings = sorted(headings, key=lambda h: h.offset)
     levels = _levels(headings)
-    items = [(h.offset, h.number, h.title, levels[h.rank]) for h in headings]
+    items = [_Item(h.offset, h.number, h.title, levels[h.rank], h.at_top) for h in headings]
 
-    # Text before the first heading (a cover page, an introduction) gets a
-    # section of its own, named after the document; a running header alone doesn't
-    if _has_own_text(doc.text[: items[0][0]], repeated):
-        items.insert(0, (0, None, title, 1))
+    first = items[0]
+    if doc.page_at(first.offset) > 1:
+        # The first section starts after page 1: the pages before it (cover,
+        # contents) are front matter
+        items.insert(0, _Item(0, None, FRONT_MATTER_TITLE, 1, True, KIND_FRONT_MATTER))
+    elif _has_own_text(doc.text[: first.offset], repeated):
+        # Text before the first heading on page 1 (an introduction) gets a
+        # section of its own, named after the document; a running header alone doesn't
+        items.insert(0, _Item(0, None, title, 1, True))
 
     sections = []
-    for i, (offset, number, heading_title, level) in enumerate(items):
-        end_offset = items[i + 1][0] if i + 1 < len(items) else len(doc.text)
+    for i, item in enumerate(items):
+        end_offset = items[i + 1].offset if i + 1 < len(items) else len(doc.text)
         end_page = doc.page_count
-        for later_offset, _, _, later_level in items[i + 1 :]:
-            if later_level <= level:
+        for later in items[i + 1 :]:
+            if later.level <= item.level:
                 # It ends where the next section at its level or higher starts:
                 # on the page before, if that section starts at the top of a page
-                end_page = doc.page_at(later_offset)
-                if doc.starts_its_page(later_offset):
+                end_page = doc.page_at(later.offset)
+                if later.at_top:
                     end_page -= 1
                 break
-        start_page = doc.page_at(offset)
+        start_page = doc.page_at(item.offset)
         sections.append(Section(
-            number=number,
-            title=heading_title,
-            level=level,
+            number=item.number,
+            title=item.title,
+            level=item.level,
             start_page=start_page,
             end_page=max(start_page, end_page),
-            start_offset=offset,
+            start_offset=item.offset,
             end_offset=end_offset,
+            kind=item.kind,
         ))
     return sections
 
@@ -267,7 +334,7 @@ def detect_sections(doc: DocumentText, outline: list[OutlineEntry], title: str) 
     title = _clean(title, MAX_TITLE_LENGTH) or "Document"
     try:
         repeated = _repeated_lines(doc.pages)
-        for find in (lambda: headings_from_outline(doc, outline), lambda: headings_from_text(doc, repeated)):
+        for find in (lambda: headings_from_outline(doc, outline, repeated), lambda: headings_from_text(doc, repeated)):
             # Several outline entries or headings pointing at the same place
             # would make empty sections: keep the first at each point
             unique = list({h.offset: h for h in reversed(find())}.values())

@@ -41,3 +41,4 @@ class SectionResponse(BaseModel):
     level: int  # 1 is the top level
     start_page: int
     end_page: int
+    kind: str  # body, or front_matter for the pages before the first section

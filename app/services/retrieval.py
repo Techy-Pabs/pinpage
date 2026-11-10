@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Document, DocumentChunk, DocumentSection, WorkspaceMember
+from app.services.sections import KIND_BODY
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,8 @@ def similar_chunks_query(user_id: uuid.UUID, document_id: uuid.UUID, vector: Seq
             WorkspaceMember.user_id == user_id,
             DocumentChunk.document_id == document_id,
             DocumentChunk.embedding.is_not(None),
+            # A contents page matches many questions weakly: never cite front matter
+            DocumentSection.kind == KIND_BODY,
         )
         # By the similarity expression, not the raw distance: see similar_chunks
         .order_by(similarity.desc(), DocumentChunk.position)

@@ -10,7 +10,7 @@ This repository has **Milestones 1 and 2**. You can register, upload a PDF, watc
 - **Upload.** Send a PDF. The API checks it within a second or two and answers `202` with status `processing`.
 - **Processing.** In the background, in three stages:
   1. Read the file from storage and extract the text of each page.
-  2. Find the sections (from the PDF's bookmarks, else numbered headings such as `4.2` or `Section 4`, else one section) and split each into chunks of about 1,000 characters that remember their pages and section. No AI.
+  2. Find the sections (from the PDF's bookmarks, else numbered headings such as `4.2` or `Section 4`, else one section) and split each into chunks of about 1,000 characters that remember their pages and section. No AI. A section ends on the page before when the next one starts at the top of a page. If the first section starts after page 1, the pages before it (cover, contents) become a "Front matter" section, which is never used to answer questions.
   3. Create an embedding for each chunk through OpenRouter, in batches, paced to stay under the free limits.
 
   Then the document is `ready`. If it can't be, it is `failed` with a reason you can show the user: too many pages, password protected, a scan with no text, a damaged file, an interruption, or the AI being unavailable.
@@ -51,7 +51,7 @@ Every document endpoint needs a login (`Authorization: Bearer <token>`). Swagger
 | GET /documents | Your documents, newest first | 200 | 401 |
 | GET /documents/{id} | One document and its status | 200 | 404 `document_not_found` |
 | GET /documents/{id}/pages/{page_number} | The text of one page (pages start at 1) | 200 | 404 `document_not_found` or `page_not_found`, 409 `document_not_ready` |
-| GET /documents/{id}/sections | The detected sections in order, with their pages | 200 | 404, 409 `document_not_ready` |
+| GET /documents/{id}/sections | The detected sections in order, with their pages and `kind` (`body` or `front_matter`) | 200 | 404, 409 `document_not_ready` |
 | POST /documents/{id}/retry | Restarts processing after `interrupted` or `ai_unavailable`, from the first unfinished stage | 202, status `processing` | 404, 409 `retry_not_allowed`, 403 `document_limit_reached` |
 | GET /documents/{id}/file | A signed link to the original PDF, with `expires_in` | 200 | 404, 409 `document_not_ready`, 502 |
 | POST /documents/{id}/conversations | Starts a conversation with a ready document | 201 | 404, 409 `document_not_ready` |
@@ -133,6 +133,16 @@ docker compose run --rm --no-deps --build api python scripts/check_ai.py
 ```
 
 It uses exactly 2 real requests from your free daily allowance: it embeds one sentence (checking the embedding has `EMBEDDING_DIMENSIONS` numbers) and asks the chat model for a one word reply. It prints PASS or FAIL for each step and never prints the key. It is not part of the automated tests.
+
+## Rebuild a document's sections
+
+Documents processed before a change to section detection keep their old sections. To rebuild them from the stored pages, without re-embedding:
+
+```sh
+docker compose exec api python -m app.cli.documents rebuild-sections <document_id>
+```
+
+It reads the PDF from storage only for its bookmarks, moves each chunk to its new section, and changes no chunk text or embedding. If the new sections would cut the text into different chunks, it refuses and changes nothing: upload that document again instead. It prints counts only, never document text.
 
 ## Making an admin
 
