@@ -69,7 +69,15 @@ def title_from(question: str) -> str:
 
 
 def save_pair(
-    db: Session, conversation: Conversation, question: str, answer: str, outcome: str, citations: list[dict]
+    db: Session,
+    conversation: Conversation,
+    question: str,
+    answer: str,
+    outcome: str,
+    citations: list[dict],
+    *,
+    mode: str = "question",
+    retrieval_query: str | None = None,
 ) -> Message:
     """The question and its answer, in the caller's transaction. Separate
     INSERTs, so clock_timestamp() gives the question the earlier time."""
@@ -79,7 +87,8 @@ def save_pair(
     db.add(Message(conversation_id=conversation.id, role=ROLE_USER, content=question))
     db.flush()
     reply = Message(
-        conversation_id=conversation.id, role=ROLE_ASSISTANT, content=answer, outcome=outcome, citations=citations
+        conversation_id=conversation.id, role=ROLE_ASSISTANT, content=answer, outcome=outcome,
+        citations=citations, mode=mode, retrieval_query=retrieval_query,
     )
     db.add(reply)
     db.flush()

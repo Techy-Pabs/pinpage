@@ -68,7 +68,7 @@ def add_pair(db, conversation_id, question="How much leave?", answer="Five days 
     db.add(Message(conversation_id=uuid.UUID(conversation_id), role="user", content=question))
     db.flush()
     db.add(Message(conversation_id=uuid.UUID(conversation_id), role="assistant", content=answer,
-                   outcome="answered", citations=[]))
+                   outcome="answered", citations=[], mode="question"))
     db.commit()
 
 
@@ -125,6 +125,8 @@ def test_get_a_conversation_with_its_messages_oldest_first(client, db, alice, re
     ]
     assert body["messages"][0]["outcome"] is None and body["messages"][0]["citations"] is None
     assert body["messages"][1]["outcome"] == "answered"
+    assert body["messages"][1]["mode"] == "question" and body["messages"][1]["retrieval_query"] is None
+    assert body["messages"][0]["mode"] is None
 
 
 def test_delete_a_conversation_and_its_messages(client, db, alice, ready_document, start):
@@ -237,6 +239,10 @@ def test_conversation_routes_need_a_login(client, method, path):
         {"role": "assistant", "outcome": None, "citations": []},  # answers always have one
         {"role": "assistant", "outcome": "maybe", "citations": []},
         {"role": "assistant", "outcome": "answered", "citations": None},
+        {"role": "assistant", "outcome": "answered", "citations": [], "mode": None},  # answers have a mode
+        {"role": "assistant", "outcome": "answered", "citations": [], "mode": "summary"},
+        {"role": "user", "outcome": None, "citations": None, "mode": "question"},  # questions don't
+        {"role": "user", "outcome": None, "citations": None, "retrieval_query": "x"},
     ],
 )
 def test_database_refuses_impossible_messages(db, alice, ready_document, start, values):

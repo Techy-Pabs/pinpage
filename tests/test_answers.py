@@ -342,7 +342,7 @@ def test_only_the_last_three_pairs_go_to_the_chat_model_without_old_markers(db, 
         db.add(Message(conversation_id=uuid.UUID(leave_conversation), role="user", content=f"Question {n}?"))
         db.flush()
         db.add(Message(conversation_id=uuid.UUID(leave_conversation), role="assistant",
-                       content=f"Answer {n} [S1][S2].", outcome="answered", citations=[]))
+                       content=f"Answer {n} [S1][S2].", outcome="answered", citations=[], mode="question"))
         db.commit()
     fake_ai.reply = "Five days [S1]."
 

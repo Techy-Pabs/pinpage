@@ -35,6 +35,8 @@ class MessageResponse(BaseModel):
     content: str
     outcome: str | None  # answered or not_found, for the assistant's answers
     citations: list[Citation] | None  # the assistant's sources; empty for not_found
+    mode: str | None  # answers only: question, page (whole pages) or section (a summary)
+    retrieval_query: str | None  # answers only: the rewritten follow up used for retrieval, if any
     created_at: datetime
 
 

@@ -16,6 +16,10 @@ ROLE_ASSISTANT = "assistant"
 OUTCOME_ANSWERED = "answered"
 OUTCOME_NOT_FOUND = "not_found"
 
+# What kind of answer it is (app.services.requests): retrieval for a
+# question, whole pages, or a section summary
+MODES = ("question", "page", "section")
+
 
 class Conversation(Base):
     """One user's questions about one document. Private to user_id, even
@@ -51,6 +55,11 @@ class Message(Base):
             "AND citations IS NOT NULL)",
             name="outcome_matches_role",
         ),
+        CheckConstraint(
+            "(role = 'user' AND mode IS NULL AND retrieval_query IS NULL) OR "
+            "(role = 'assistant' AND mode IS NOT NULL AND mode IN ('question', 'page', 'section'))",
+            name="mode_matches_role",
+        ),
         Index("ix_messages_conversation_id_created_at", "conversation_id", "created_at"),
     )
 
@@ -63,6 +72,10 @@ class Message(Base):
     # none_as_null: Python None is stored as SQL NULL, not the JSON value null,
     # so the check above can tell a question (no citations) from an answer
     citations: Mapped[list[dict] | None] = mapped_column(JSONB(none_as_null=True))
+    # Answers only: question, page or section
+    mode: Mapped[str | None] = mapped_column(String(20))
+    # Answers only: the rewritten follow up used for retrieval, if any (for debugging)
+    retrieval_query: Mapped[str | None] = mapped_column(Text)
     # clock_timestamp(), not now(): a question and its answer are saved in one
     # transaction, where now() would give both the same time and lose their order
     created_at: Mapped[datetime] = mapped_column(
