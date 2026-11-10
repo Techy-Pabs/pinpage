@@ -34,6 +34,8 @@ def settings_for_answers(monkeypatch):
     monkeypatch.setattr(settings, "retrieval_top_k", 6)
     monkeypatch.setattr(settings, "retrieval_min_similarity", 0.30)
     monkeypatch.setattr(settings, "daily_questions_per_user", 20)
+    # These tests are about answering one question; follow up rewriting has its own
+    monkeypatch.setattr(settings, "rewrite_follow_ups", False)
 
 
 @pytest.fixture

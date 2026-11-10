@@ -64,6 +64,15 @@ def recent_history(db: Session, conversation_id: uuid.UUID) -> list[ChatMessage]
     ]
 
 
+def has_answered_question(db: Session, conversation_id: uuid.UUID) -> bool:
+    """True once the conversation has an answer that found something."""
+    return db.scalar(
+        select(func.count())
+        .select_from(Message)
+        .where(Message.conversation_id == conversation_id, Message.outcome == "answered")
+    ) > 0
+
+
 def title_from(question: str) -> str:
     return " ".join(question.split())[:TITLE_LENGTH].rstrip()
 

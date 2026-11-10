@@ -234,6 +234,13 @@ def test_page_and_summary_settings_default_to_3_pages_12000_characters_and_4_par
 
     assert settings.max_pages_per_question == 3
     assert (settings.summary_part_chars, settings.summary_max_parts) == (12000, 4)
+    assert settings.rewrite_follow_ups is True
+
+
+def test_rewrite_follow_ups_can_be_turned_off(monkeypatch):
+    monkeypatch.setenv("REWRITE_FOLLOW_UPS", "false")
+
+    assert make().rewrite_follow_ups is False
 
 
 @pytest.mark.parametrize(

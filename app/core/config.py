@@ -88,6 +88,9 @@ class Settings(BaseSettings):
     # parts (so one summary uses at most SUMMARY_MAX_PARTS + 1 requests)
     summary_part_chars: int = Field(default=12000, ge=2000, le=50000)
     summary_max_parts: int = Field(default=4, gt=0, le=10)
+    # Rewrite short follow up questions ("and for part time staff?") into
+    # standalone ones before retrieval; one extra request when it applies
+    rewrite_follow_ups: bool = True
 
     # LangSmith (which comes with LangChain's text splitter) sends traces,
     # including document text, to LangChain's servers if any of these is

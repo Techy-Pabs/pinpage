@@ -203,3 +203,34 @@ def make_document(db, fake_storage):
         return document
 
     return _make_document
+
+
+@pytest.fixture
+def make_structured_document(db, make_document):
+    """make_structured_document(pages, sections, chunks, email) -> a ready
+    Document with exactly these pages, sections and (embedded) chunks.
+
+    sections: (number, title, level, start_page, end_page, kind)
+    chunks: (section index, content, page_start, page_end)
+    """
+    from app.models import DocumentChunk, DocumentPage, DocumentSection
+    from app.models.document import STATUS_READY
+
+    def _make(pages, sections, chunks, email="alice@example.com"):
+        document = make_document(email, status=STATUS_READY, page_count=len(pages), title="Staff Handbook")
+        for number, text in enumerate(pages, start=1):
+            db.add(DocumentPage(document_id=document.id, page_number=number, text=text, char_count=len(text)))
+        rows = []
+        for position, (number, title, level, start, end, kind) in enumerate(sections):
+            row = DocumentSection(document_id=document.id, position=position, number=number, title=title,
+                                  level=level, start_page=start, end_page=end, kind=kind)
+            db.add(row)
+            rows.append(row)
+        db.flush()
+        for position, (section_index, content, page_start, page_end) in enumerate(chunks):
+            db.add(DocumentChunk(document_id=document.id, section_id=rows[section_index].id, position=position,
+                                 page_start=page_start, page_end=page_end, content=content, embedding=[1.0] * 2048))
+        db.commit()
+        return document
+
+    return _make

@@ -251,7 +251,9 @@ class FakeAI(AIClient):
 
     fail_on = {"reply"} or {"embed"} makes those calls fail like an outage;
     fail_after_batches = n lets n embedding requests succeed first;
-    vectors = {text: vector} fixes the embedding of chosen texts.
+    vectors = {text: vector} fixes the embedding of chosen texts;
+    replies = [...] answers the next chat requests in turn (an exception in
+    the list is raised instead), then reply answers the rest.
     """
 
     def __init__(self, dimensions: int = 2048):
@@ -262,11 +264,17 @@ class FakeAI(AIClient):
         self.reply_calls: list[dict] = []
         self.embed_calls: list[dict] = []
         self.vectors: dict[str, list[float]] = {}
+        self.replies: list[str | Exception] = []
 
     def generate_reply(self, system_prompt: str, history: list[ChatMessage]) -> str:
         self.reply_calls.append({"system_prompt": system_prompt, "history": history})
         if "reply" in self.fail_on:
             raise AIServiceError("simulated outage")
+        if self.replies:
+            reply = self.replies.pop(0)
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
         return self.reply
 
     def embed_batch(self, texts: list[str], mode: EmbeddingMode) -> list[list[float]]:
