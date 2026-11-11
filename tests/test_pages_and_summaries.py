@@ -10,6 +10,8 @@ from app.core.config import settings
 from app.models import DocumentChunk, DocumentPage, DocumentSection, Message, QuestionUsage
 from app.models.document import STATUS_READY
 from app.services import modes
+from app.services.ai import ChatReply
+from app.services.citations import trim_truncated
 from app.services.prompts import NOT_FOUND_MESSAGE
 from app.services.requests import SectionInfo
 
@@ -333,3 +335,82 @@ def test_ordinary_questions_keep_mode_question(ask_about, fake_ai):
 
     assert answer["mode"] == "question"
     assert all("Contents" not in e for e in [fake_ai.reply_calls[0]["system_prompt"]])  # front matter excluded
+
+
+# --- Replies cut off at the output limit -------------------------------------------------------
+
+def test_each_kind_of_answer_has_its_own_output_limit(ask_about, fake_ai, monkeypatch):
+    monkeypatch.setattr(settings, "ai_max_tokens_page", 111)
+    monkeypatch.setattr(settings, "ai_max_tokens_summary", 222)
+    fake_ai.reply = "Leave rules [S1]."
+
+    ask_about("What does page 2 say?")
+    ask_about("Summarise section 4")
+
+    assert [call["max_tokens"] for call in fake_ai.reply_calls] == [111, 222]
+
+
+def test_a_cut_off_page_answer_keeps_its_complete_cited_lines(db, ask_about, fake_ai):
+    fake_ai.replies = [ChatReply(
+        "Page 3 is about carrying over leave [S1].\nStaff can carry over five days [S1].\nThey should ask their man [",
+        "length",
+    )]
+
+    answer = ask_about("What does page 3 say?")
+
+    assert answer["content"] == "Page 3 is about carrying over leave [S1].\nStaff can carry over five days [S1]."
+    assert answer["outcome"] == "answered" and [c["marker"] for c in answer["citations"]] == ["S1"]
+    assert len(fake_ai.reply_calls) == 1  # no second attempt with the same limit
+    assert usage(db) == 1
+
+
+def test_a_cut_off_summary_with_no_complete_cited_line_is_not_found(ask_about, fake_ai):
+    fake_ai.replies = [ChatReply("Section 4 covers leave, including annual leave and sick", "length")]
+
+    answer = ask_about("Summarise section 4")
+
+    assert answer["content"] == NOT_FOUND_MESSAGE
+    assert answer["outcome"] == "not_found" and answer["citations"] == []
+
+
+def test_an_empty_cut_off_reply_is_not_found_not_a_503(db, ask_about, fake_ai):
+    # A reasoning model that spent the whole limit thinking writes nothing
+    fake_ai.replies = [ChatReply("", "length")]
+
+    answer = ask_about("Summarise section 4")
+
+    assert answer["content"] == NOT_FOUND_MESSAGE and answer["outcome"] == "not_found"
+    assert len(fake_ai.reply_calls) == 1
+    assert usage(db) == 1
+
+
+def test_a_cut_off_part_summary_keeps_its_cited_lines_for_the_combine_request(ask_about, fake_ai, monkeypatch):
+    monkeypatch.setattr(settings, "summary_part_chars", 2000)
+    long = [(1 + i % 3, f"Point {i}. " + "x" * 900, 2 + i % 3, 2 + i % 3) for i in range(6)]
+    fake_ai.replies = [
+        "Part one [S1].",
+        ChatReply("Part two [S3].\nAnd then som", "length"),
+        ChatReply("", "length"),  # nothing left: not sent to the combine request
+        "Section 4 covers leave [S1][S3].",
+    ]
+
+    answer = ask_about("Summarise section 4", chunks=sorted(long, key=lambda c: c[0]))
+
+    combine = fake_ai.reply_calls[-1]["system_prompt"]
+    assert combine.count("<part number=") == 2
+    assert "Part two [S3]." in combine and "And then som" not in combine
+    assert answer["outcome"] == "answered"
+
+
+@pytest.mark.parametrize(("reply", "expected"), [
+    ("One [S1].\nTwo [S2]\nThr", "One [S1].\nTwo [S2]"),
+    ("One [S1].\nTwo [S2", "One [S1]."),  # a marker cut in half doesn't count
+    ("One [S1].\nTwo [S1][S", "One [S1]."),
+    ("One [S1, S2].\nTwo, with no marker", "One [S1, S2]."),
+    ("One [S1].\nTwo [S9].", "One [S1]."),  # only valid markers count
+    ("Intro line\nOne [S2]).\nTwo", "Intro line\nOne [S2])."),
+    ("Nothing cited here", ""),
+    ("", ""),
+])
+def test_trim_truncated(reply, expected):
+    assert trim_truncated(reply, chunk_count=2) == expected

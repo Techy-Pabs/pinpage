@@ -75,6 +75,22 @@ def _with_space(match: re.Match, keep_valid) -> str:
     return (" " if match.group(0)[0].isspace() else "") + kept
 
 
+# A line ending in a marker group, maybe followed by closing punctuation
+_ENDS_WITH_MARKERS = re.compile(r"\[\s*(S\d+(?:\s*[,;]\s*S\d+)*)\s*\]\W*$", re.IGNORECASE)
+
+
+def trim_truncated(answer: str, chunk_count: int) -> str:
+    """A reply cut off at the output limit, up to its last line that ends with
+    a valid marker; "" if there is none. Whatever follows that line is
+    unfinished and is dropped, so no answer ends mid sentence."""
+    lines = answer.splitlines()
+    for end in range(len(lines) - 1, -1, -1):
+        match = _ENDS_WITH_MARKERS.search(lines[end].rstrip())
+        if match and any(0 < int(n) <= chunk_count for n in _MARKER.findall(match.group(1))):
+            return "\n".join(lines[: end + 1]).strip()
+    return ""
+
+
 def strip_markers(text: str) -> str:
     """An earlier answer without its markers, for the conversation history:
     they pointed at that question's excerpts, not this one's."""

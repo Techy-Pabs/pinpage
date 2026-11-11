@@ -11,7 +11,7 @@ from pydantic import SecretStr, ValidationError
 
 from app.core.config import Settings
 from app.dependencies import get_ai
-from app.services.ai import AIServiceError, FakeAI, OpenRouterAI, RequestPacer, default_ai
+from app.services.ai import AIServiceError, ChatReply, FakeAI, OpenRouterAI, RequestPacer, default_ai
 
 KEY = "sk-or-test-key-do-not-leak"
 SECRET_TEXT = "Confidential: salary of a named employee"
@@ -60,8 +60,11 @@ def embeddings(*vectors):
     return SimpleNamespace(data=list(reversed(data)))
 
 
-def chat(reply, model="chat-model"):
-    return SimpleNamespace(model=model, choices=[SimpleNamespace(message=SimpleNamespace(content=reply))])
+def chat(reply, model="chat-model", finish_reason="stop", usage=None):
+    return SimpleNamespace(
+        model=model, usage=usage,
+        choices=[SimpleNamespace(message=SimpleNamespace(content=reply), finish_reason=finish_reason)],
+    )
 
 
 def rate_limited():
@@ -198,6 +201,65 @@ def test_empty_replies_and_classifier_labels_are_errors(bad):
     with pytest.raises(AIServiceError):
         ai.generate_reply("System", [{"role": "user", "content": "Hi"}])
     assert len(calls) == 2
+
+
+def test_each_request_can_set_its_own_output_limit():
+    ai, calls = make_ai([chat("Ready"), chat("Ready")])
+
+    ai.generate("System", [], max_tokens=4000)
+    ai.generate("System", [])
+
+    assert [call["max_tokens"] for call in calls] == [4000, 1000]  # AI_MAX_TOKENS by default
+
+
+@pytest.mark.parametrize("text", ["Staff get 25 days [S1].\nThey can carry over fi", "", None])
+def test_a_reply_cut_off_at_the_limit_is_returned_once_marked_truncated(text):
+    # Empty included: a reasoning model can spend the whole limit thinking.
+    # Another attempt with the same limit would be cut off again.
+    ai, calls = make_ai([chat(text, finish_reason="length"), chat("unused")])
+
+    reply = ai.generate("System", [{"role": "user", "content": "Hi"}], max_tokens=50)
+
+    assert reply.truncated and reply.text == (text or "").strip()
+    assert len(calls) == 1
+
+
+def test_generate_reply_refuses_a_cut_off_reply():
+    ai, calls = make_ai([chat("Half a sent", finish_reason="length")])
+
+    with pytest.raises(AIServiceError, match="cut off") as error:
+        ai.generate_reply("System", [])
+    assert error.value.retryable is False and len(calls) == 1
+
+
+def test_an_empty_reply_that_was_not_cut_off_is_still_retried_then_an_error():
+    ai, calls = make_ai([chat("", finish_reason="stop"), chat("", finish_reason="stop")])
+
+    with pytest.raises(AIServiceError, match="empty reply"):
+        ai.generate("System", [])
+    assert len(calls) == 2
+
+
+def test_reply_log_has_finish_reason_length_and_tokens_but_never_the_text(caplog):
+    usage = SimpleNamespace(completion_tokens=50, completion_tokens_details=SimpleNamespace(reasoning_tokens=42))
+    ai, _ = make_ai([chat(SECRET_TEXT, finish_reason="length", usage=usage)])
+
+    with caplog.at_level(logging.INFO, logger="app.services.ai"):
+        ai.generate("System", [], max_tokens=50)
+
+    assert "finish_reason=length" in caplog.text
+    assert f"{len(SECRET_TEXT)} characters" in caplog.text
+    assert "completion_tokens=50 (reasoning 42)" in caplog.text
+    assert SECRET_TEXT not in caplog.text
+
+
+def test_fake_ai_can_give_a_cut_off_reply():
+    fake = FakeAI()
+    fake.replies = [ChatReply("Half", "length")]
+
+    assert fake.generate("System", [], max_tokens=10).truncated
+    assert fake.reply_calls[0]["max_tokens"] == 10
+    assert fake.generate("System", []).text == fake.reply
 
 
 def test_one_model_means_no_fallback_list():

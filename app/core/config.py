@@ -67,7 +67,15 @@ class Settings(BaseSettings):
     # Long enough for a model that thinks before it answers, and for
     # OpenRouter to try the fallback if it can't
     ai_timeout_seconds: float = Field(default=45, gt=0, le=120)
+    # Output limits, in tokens. The chat model reasons before it writes, and
+    # the reasoning counts against the limit, so a long answer needs room for
+    # both. A reply cut off by the limit is trimmed to its last complete
+    # cited line. AI_MAX_TOKENS covers everything else (follow up rewrites).
     ai_max_tokens: int = Field(default=1000, gt=0)
+    ai_max_tokens_question: int = Field(default=2500, gt=0)
+    ai_max_tokens_page: int = Field(default=4000, gt=0)
+    # Each summary part and the request combining them
+    ai_max_tokens_summary: int = Field(default=5000, gt=0)
     # Texts per embedding request; each request counts once against the
     # free daily allowance
     embedding_batch_size: int = Field(default=64, gt=0, le=256)

@@ -19,6 +19,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Literal, TypeVar
 
@@ -50,6 +51,24 @@ _CLASSIFIER_LABEL = re.compile(
 _NEMOTRON_PREFIXES: dict[EmbeddingMode, str] = {"query": "query: ", "document": "passage: "}
 
 T = TypeVar("T")
+
+
+# finish_reason when the reply hit max_tokens before the model finished
+FINISH_LENGTH = "length"
+
+
+@dataclass
+class ChatReply:
+    """The chat model's reply and why it stopped. finish_reason "length" means
+    max_tokens ran out, so the text may end mid sentence (or be empty: a
+    reasoning model can spend the whole allowance thinking)."""
+
+    text: str
+    finish_reason: str | None = "stop"
+
+    @property
+    def truncated(self) -> bool:
+        return self.finish_reason == FINISH_LENGTH
 
 
 def looks_like_classifier_label(reply: str) -> bool:
@@ -100,8 +119,17 @@ class RequestPacer:
 
 class AIClient(ABC):
     @abstractmethod
-    def generate_reply(self, system_prompt: str, history: list[ChatMessage]) -> str:
-        """The chat model's reply. Raises AIServiceError."""
+    def generate(self, system_prompt: str, history: list[ChatMessage], max_tokens: int | None = None) -> ChatReply:
+        """The chat model's reply, possibly cut off at max_tokens (the
+        AI_MAX_TOKENS setting when None). Raises AIServiceError."""
+
+    def generate_reply(self, system_prompt: str, history: list[ChatMessage], max_tokens: int | None = None) -> str:
+        """The reply's text, for callers that can't use part of a reply: one
+        cut off at max_tokens is an error."""
+        reply = self.generate(system_prompt, history, max_tokens)
+        if reply.truncated:
+            raise AIServiceError("reply cut off at the output limit", retryable=False)
+        return reply.text
 
     @abstractmethod
     def embed_batch(self, texts: list[str], mode: EmbeddingMode) -> list[list[float]]:
@@ -195,29 +223,43 @@ class OpenRouterAI(AIClient):
 
     # --- Chat ------------------------------------------------------------------------
 
-    def _reply_once(self, system_prompt: str, history: list[ChatMessage]) -> str:
+    def _reply_once(self, system_prompt: str, history: list[ChatMessage], max_tokens: int) -> ChatReply:
         models = self.chat_models
         response = self._call("reply", lambda: self.client.chat.completions.create(
             model=models[0],
             messages=[{"role": "system", "content": system_prompt}, *history],
-            max_tokens=self._max_tokens,
+            max_tokens=max_tokens,
             # OpenRouter's fallback list: if the first model can't answer
             # (for example its provider is down), the next one is tried
             **({"extra_body": {"models": models}} if len(models) > 1 else {}),
         ))
-        reply = response.choices[0].message.content if response.choices else None
-        if not reply or not reply.strip():
+        choice = response.choices[0] if response.choices else None
+        reply = (choice.message.content if choice else None) or ""
+        finish_reason = getattr(choice, "finish_reason", None)
+        # Counts only, never the text
+        logger.info(
+            "AI reply from model=%s: finish_reason=%s, %d characters, %s (max_tokens=%d)",
+            response.model, finish_reason, len(reply.strip()), _token_counts(response), max_tokens,
+        )
+        if finish_reason == FINISH_LENGTH:
+            # Another attempt with the same limit would be cut off again;
+            # the caller decides what part of the reply to keep
+            logger.warning("AI reply was cut off at max_tokens=%d (model=%s)", max_tokens, response.model)
+            if looks_like_classifier_label(reply):
+                raise AIServiceError("classifier label instead of a reply")
+            return ChatReply(reply.strip(), finish_reason)
+        if not reply.strip():
             logger.warning("AI reply was empty (model=%s)", response.model)
             raise AIServiceError("empty reply")
         if looks_like_classifier_label(reply):
             # Never show a classifier's verdict as if it were an answer
             logger.warning("AI reply was a safety classifier label (model=%s)", response.model)
             raise AIServiceError("classifier label instead of a reply")
-        logger.info("AI reply from model=%s", response.model)
-        return reply.strip()
+        return ChatReply(reply.strip(), finish_reason)
 
-    def generate_reply(self, system_prompt: str, history: list[ChatMessage]) -> str:
-        return self._attempts("reply", lambda: self._reply_once(system_prompt, history))
+    def generate(self, system_prompt: str, history: list[ChatMessage], max_tokens: int | None = None) -> ChatReply:
+        limit = max_tokens or self._max_tokens
+        return self._attempts("reply", lambda: self._reply_once(system_prompt, history, limit))
 
     # --- Embeddings --------------------------------------------------------------------
 
@@ -245,6 +287,16 @@ class OpenRouterAI(AIClient):
         return vectors
 
 
+def _token_counts(response) -> str:
+    """"completion_tokens=900 (reasoning 850)" from the response's usage, if any."""
+    usage = getattr(response, "usage", None)
+    completion = getattr(usage, "completion_tokens", None)
+    if completion is None:
+        return "completion_tokens=unknown"
+    reasoning = getattr(getattr(usage, "completion_tokens_details", None), "reasoning_tokens", None)
+    return f"completion_tokens={completion}" + (f" (reasoning {reasoning})" if reasoning is not None else "")
+
+
 class FakeAI(AIClient):
     """For tests: fixed replies, and embeddings worked out from the words in
     each text, so similar texts get similar vectors. Records every call.
@@ -253,7 +305,9 @@ class FakeAI(AIClient):
     fail_after_batches = n lets n embedding requests succeed first;
     vectors = {text: vector} fixes the embedding of chosen texts;
     replies = [...] answers the next chat requests in turn (an exception in
-    the list is raised instead), then reply answers the rest.
+    the list is raised instead, and a ChatReply such as
+    ChatReply("...", "length") stands for a reply cut off at max_tokens),
+    then reply answers the rest.
     """
 
     def __init__(self, dimensions: int = 2048):
@@ -264,18 +318,16 @@ class FakeAI(AIClient):
         self.reply_calls: list[dict] = []
         self.embed_calls: list[dict] = []
         self.vectors: dict[str, list[float]] = {}
-        self.replies: list[str | Exception] = []
+        self.replies: list[str | ChatReply | Exception] = []
 
-    def generate_reply(self, system_prompt: str, history: list[ChatMessage]) -> str:
-        self.reply_calls.append({"system_prompt": system_prompt, "history": history})
+    def generate(self, system_prompt: str, history: list[ChatMessage], max_tokens: int | None = None) -> ChatReply:
+        self.reply_calls.append({"system_prompt": system_prompt, "history": history, "max_tokens": max_tokens})
         if "reply" in self.fail_on:
             raise AIServiceError("simulated outage")
-        if self.replies:
-            reply = self.replies.pop(0)
-            if isinstance(reply, Exception):
-                raise reply
-            return reply
-        return self.reply
+        reply = self.replies.pop(0) if self.replies else self.reply
+        if isinstance(reply, Exception):
+            raise reply
+        return reply if isinstance(reply, ChatReply) else ChatReply(reply)
 
     def embed_batch(self, texts: list[str], mode: EmbeddingMode) -> list[list[float]]:
         if "embed" in self.fail_on or (

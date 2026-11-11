@@ -16,7 +16,7 @@ from app.core.config import settings
 from app.models import Document, DocumentChunk, DocumentPage, DocumentSection, WorkspaceMember
 from app.models.conversation import OUTCOME_ANSWERED, OUTCOME_NOT_FOUND
 from app.services.ai import AIClient, ChatMessage
-from app.services.citations import cite
+from app.services.citations import cite, trim_truncated
 from app.services.prompts import (
     NOT_FOUND_MESSAGE,
     build_combine_prompt,
@@ -47,6 +47,23 @@ def cited_or_not_found(reply: str, excerpts: list[RetrievedChunk], mode: str) ->
     if cited.citations:
         return Answer(cited.text, OUTCOME_ANSWERED, mode, cited.citations)
     return Answer(NOT_FOUND_MESSAGE, OUTCOME_NOT_FOUND, mode)
+
+
+def complete_reply(
+    ai: AIClient, system_prompt: str, messages: list[ChatMessage], max_tokens: int, excerpt_count: int, kind: str
+) -> str:
+    """The reply's text. One cut off at max_tokens is trimmed to its last line
+    ending with a valid marker ("" if none), never shown mid sentence."""
+    reply = ai.generate(system_prompt, messages, max_tokens)
+    if not reply.truncated:
+        return reply.text
+    trimmed = trim_truncated(reply.text, excerpt_count)
+    # Line counts only, never the text
+    logger.warning(
+        "%s reply cut off at max_tokens=%d: kept %d of %d lines",
+        kind, max_tokens, len(trimmed.splitlines()), len(reply.text.splitlines()),
+    )
+    return trimmed
 
 
 def visible_document_query(user_id: uuid.UUID, document_id: uuid.UUID):
@@ -158,8 +175,9 @@ def answer_pages(
             )
             for p in readable
         ]
-        reply = ai.generate_reply(
-            build_page_prompt(document.title, excerpts), [*history, {"role": "user", "content": question}]
+        reply = complete_reply(
+            ai, build_page_prompt(document.title, excerpts), [*history, {"role": "user", "content": question}],
+            settings.ai_max_tokens_page, len(excerpts), "Page",
         )
         answer = cited_or_not_found(reply, excerpts, MODE_PAGE)
 
@@ -269,21 +287,31 @@ def answer_section(
         )
 
     request_messages = [*history, {"role": "user", "content": question}]
+    limit = settings.ai_max_tokens_summary
     if len(parts) == 1:
-        reply = ai.generate_reply(build_summary_prompt(document.title, list(enumerate(excerpts))), request_messages)
+        reply = complete_reply(
+            ai, build_summary_prompt(document.title, list(enumerate(excerpts))), request_messages,
+            limit, len(excerpts), "Summary",
+        )
     else:
         # One request per part, each keeping the markers of the whole section,
         # then one request that combines the part summaries
         summaries = [
-            ai.generate_reply(
+            complete_reply(
+                ai,
                 build_summary_prompt(
                     document.title, [(i, excerpts[i]) for i in part], part=number, parts=len(parts)
                 ),
                 [{"role": "user", "content": question}],
+                limit, len(excerpts), "Summary part",
             )
             for number, part in enumerate(parts, start=1)
         ]
-        reply = ai.generate_reply(build_combine_prompt(document.title, summaries), request_messages)
+        # A part cut off with nothing left adds nothing to combine
+        summaries = [summary for summary in summaries if summary]
+        reply = complete_reply(
+            ai, build_combine_prompt(document.title, summaries), request_messages, limit, len(excerpts), "Summary",
+        ) if summaries else ""
     logger.info("Section summary for document %s: %d excerpts in %d part(s)", document.id, len(excerpts), len(parts))
     return cited_or_not_found(reply, excerpts, MODE_SECTION)
 
@@ -305,7 +333,8 @@ def answer_question(
     if not chunks:
         # Nothing close enough: no chat request at all
         return Answer(NOT_FOUND_MESSAGE, OUTCOME_NOT_FOUND, MODE_QUESTION)
-    reply = ai.generate_reply(
-        build_grounding_prompt(document.title, chunks), [*history, {"role": "user", "content": question}]
+    reply = complete_reply(
+        ai, build_grounding_prompt(document.title, chunks), [*history, {"role": "user", "content": question}],
+        settings.ai_max_tokens_question, len(chunks), "Question",
     )
     return cited_or_not_found(reply, chunks, MODE_QUESTION)
