@@ -103,7 +103,7 @@ All set in `.env`, so they change without code changes:
 | `DAILY_QUESTIONS_PER_USER` | 20 | Questions per user per day, counted in UTC (429 after that) |
 | `MAX_PAGES_PER_QUESTION` | 3 | Pages read for one page question; more are cut, with a note in the answer |
 | `SUMMARY_PART_CHARS` | 12000 | Characters per summary part; a longer section is summarised in parts, then combined |
-| `AI_MAX_TOKENS_QUESTION`, `AI_MAX_TOKENS_PAGE`, `AI_MAX_TOKENS_SUMMARY` | 2500, 4000, 5000 | Output tokens for an answer, a page answer and each summary request. The model's reasoning counts too. A reply cut off by its limit is trimmed to its last complete cited line, or becomes the not found answer if none is left |
+| `AI_MAX_TOKENS_QUESTION`, `AI_MAX_TOKENS_PAGE`, `AI_MAX_TOKENS_SUMMARY` | 2500, 4000, 5000 | Output tokens for an answer, a page answer and each summary request. The model's reasoning counts too. A reply cut off by its limit is not retried: it is trimmed after its last valid marker, or, with nothing cited, gives 503 `ai_unavailable` (nothing saved or counted) |
 | `REWRITE_FOLLOW_UPS` | true | Rewrite short follow up questions before retrieval; false turns it off |
 | `SUMMARY_MAX_PARTS` | 4 | Parts one summary may use (so at most 5 requests); above that, Pinpage suggests the subsections instead. A summary counts as one question |
 

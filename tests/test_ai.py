@@ -182,7 +182,7 @@ def test_no_texts_means_no_request():
 
 # --- Chat ---------------------------------------------------------------------------------------
 
-def test_reply_sends_the_fallback_models_and_strips_the_reply():
+def test_reply_asks_the_primary_model_first_and_strips_the_reply():
     ai, calls = make_ai([chat("  Ready.  ")])
 
     reply = ai.generate_reply("System prompt", [{"role": "user", "content": "Hi"}])
@@ -190,7 +190,7 @@ def test_reply_sends_the_fallback_models_and_strips_the_reply():
     assert reply == "Ready."
     assert calls[0]["model"] == "chat-model"
     assert calls[0]["messages"][0] == {"role": "system", "content": "System prompt"}
-    assert calls[0]["extra_body"] == {"models": ["chat-model", "fallback-model"]}
+    assert "extra_body" not in calls[0]  # the primary model alone first
     assert calls[0]["max_tokens"] == 1000
 
 
@@ -260,6 +260,37 @@ def test_fake_ai_can_give_a_cut_off_reply():
     assert fake.generate("System", [], max_tokens=10).truncated
     assert fake.reply_calls[0]["max_tokens"] == 10
     assert fake.generate("System", []).text == fake.reply
+
+
+@pytest.mark.parametrize(("failure", "reason"), [
+    (lambda: rate_limited(), "provider returned HTTP 429"),
+    (lambda: openai.APITimeoutError(request=REQUEST), "request failed (APITimeoutError)"),
+    (lambda: chat(""), "empty reply"),
+])
+def test_when_the_primary_fails_the_reason_is_logged_and_the_fallbacks_answer(caplog, failure, reason):
+    ai, calls = make_ai(
+        [failure(), chat("Ready", model="fallback-model")], models=("chat-model", "fallback-1", "fallback-2")
+    )
+
+    with caplog.at_level(logging.INFO, logger="app.services.ai"):
+        reply = ai.generate_reply("System", [{"role": "user", "content": SECRET_TEXT}])
+
+    assert reply == "Ready"
+    assert [c["model"] for c in calls] == ["chat-model", "fallback-1"]
+    assert calls[1]["extra_body"] == {"models": ["fallback-1", "fallback-2"]}
+    assert f"primary chat model chat-model failed ({reason}); using the fallback models" in caplog.text
+    assert "model=fallback-model" in caplog.text
+    assert SECRET_TEXT not in caplog.text
+
+
+def test_with_one_model_the_second_attempt_asks_it_again(caplog):
+    ai, calls = make_ai([rate_limited(), chat("Ready")], models=("only-model",))
+
+    with caplog.at_level(logging.INFO, logger="app.services.ai"):
+        assert ai.generate_reply("System", []) == "Ready"
+
+    assert [c["model"] for c in calls] == ["only-model", "only-model"]
+    assert "primary chat model" not in caplog.text
 
 
 def test_one_model_means_no_fallback_list():

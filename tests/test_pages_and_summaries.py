@@ -11,7 +11,7 @@ from app.models import DocumentChunk, DocumentPage, DocumentSection, Message, Qu
 from app.models.document import STATUS_READY
 from app.services import modes
 from app.services.ai import ChatReply
-from app.services.citations import trim_truncated
+from app.services.citations import trim_at_last_marker, trim_to_cited_lines
 from app.services.prompts import NOT_FOUND_MESSAGE
 from app.services.requests import SectionInfo
 
@@ -350,38 +350,42 @@ def test_each_kind_of_answer_has_its_own_output_limit(ask_about, fake_ai, monkey
     assert [call["max_tokens"] for call in fake_ai.reply_calls] == [111, 222]
 
 
-def test_a_cut_off_page_answer_keeps_its_complete_cited_lines(db, ask_about, fake_ai):
+def test_a_cut_off_page_answer_keeps_everything_up_to_its_last_marker(db, ask_about, fake_ai):
+    # A paragraph: markers mid line, then a sentence cut off
     fake_ai.replies = [ChatReply(
-        "Page 3 is about carrying over leave [S1].\nStaff can carry over five days [S1].\nThey should ask their man [",
+        "Page 3 is about carrying over leave [S1]. Staff can carry over five days [S1]. They should ask their man [",
         "length",
     )]
 
     answer = ask_about("What does page 3 say?")
 
-    assert answer["content"] == "Page 3 is about carrying over leave [S1].\nStaff can carry over five days [S1]."
+    assert answer["content"] == "Page 3 is about carrying over leave [S1]. Staff can carry over five days [S1]."
     assert answer["outcome"] == "answered" and [c["marker"] for c in answer["citations"]] == ["S1"]
     assert len(fake_ai.reply_calls) == 1  # no second attempt with the same limit
     assert usage(db) == 1
 
 
-def test_a_cut_off_summary_with_no_complete_cited_line_is_not_found(ask_about, fake_ai):
-    fake_ai.replies = [ChatReply("Section 4 covers leave, including annual leave and sick", "length")]
-
-    answer = ask_about("Summarise section 4")
-
-    assert answer["content"] == NOT_FOUND_MESSAGE
-    assert answer["outcome"] == "not_found" and answer["citations"] == []
+def messages(db) -> int:
+    db.expire_all()
+    return db.scalar(select(func.count()).select_from(Message))
 
 
-def test_an_empty_cut_off_reply_is_not_found_not_a_503(db, ask_about, fake_ai):
-    # A reasoning model that spent the whole limit thinking writes nothing
-    fake_ai.replies = [ChatReply("", "length")]
+@pytest.mark.parametrize("text", [
+    "",  # a reasoning model that spent the whole limit thinking writes nothing
+    "Section 4 covers leave, including annual leave and sick",  # nothing cited before the cut
+])
+def test_a_cut_off_summary_with_nothing_cited_gives_503_saves_and_counts_nothing(
+    db, client, alice, structured_document, fake_ai, text
+):
+    doc = structured_document()
+    conversation = client.post(f"/documents/{doc.id}/conversations", headers=alice).json()["id"]
+    fake_ai.replies = [ChatReply(text, "length")]
 
-    answer = ask_about("Summarise section 4")
+    response = client.post(f"/conversations/{conversation}/messages", headers=alice, json={"content": "Summarise section 4"})
 
-    assert answer["content"] == NOT_FOUND_MESSAGE and answer["outcome"] == "not_found"
-    assert len(fake_ai.reply_calls) == 1
-    assert usage(db) == 1
+    assert response.status_code == 503 and response.json()["error"]["code"] == "ai_unavailable"
+    assert len(fake_ai.reply_calls) == 1  # not retried
+    assert messages(db) == 0 and usage(db) == 0
 
 
 def test_a_cut_off_part_summary_keeps_its_cited_lines_for_the_combine_request(ask_about, fake_ai, monkeypatch):
@@ -389,7 +393,7 @@ def test_a_cut_off_part_summary_keeps_its_cited_lines_for_the_combine_request(as
     long = [(1 + i % 3, f"Point {i}. " + "x" * 900, 2 + i % 3, 2 + i % 3) for i in range(6)]
     fake_ai.replies = [
         "Part one [S1].",
-        ChatReply("Part two [S3].\nAnd then som", "length"),
+        ChatReply("Part two [S3].\nAnd then [S4] som", "length"),  # part summaries keep whole cited lines
         ChatReply("", "length"),  # nothing left: not sent to the combine request
         "Section 4 covers leave [S1][S3].",
     ]
@@ -398,19 +402,44 @@ def test_a_cut_off_part_summary_keeps_its_cited_lines_for_the_combine_request(as
 
     combine = fake_ai.reply_calls[-1]["system_prompt"]
     assert combine.count("<part number=") == 2
-    assert "Part two [S3]." in combine and "And then som" not in combine
+    assert "Part two [S3]." in combine and "And then" not in combine
     assert answer["outcome"] == "answered"
+
+
+def test_every_part_summary_cut_off_with_nothing_cited_gives_503(db, client, alice, structured_document, fake_ai, monkeypatch):
+    monkeypatch.setattr(settings, "summary_part_chars", 2000)
+    long = [(1 + i % 3, f"Point {i}. " + "x" * 900, 2 + i % 3, 2 + i % 3) for i in range(6)]
+    doc = structured_document(chunks=sorted(long, key=lambda c: c[0]))
+    conversation = client.post(f"/documents/{doc.id}/conversations", headers=alice).json()["id"]
+    fake_ai.replies = [ChatReply("", "length")] * 3
+
+    response = client.post(f"/conversations/{conversation}/messages", headers=alice, json={"content": "Summarise section 4"})
+
+    assert response.status_code == 503
+    assert len(fake_ai.reply_calls) == 3  # no combine request
+    assert messages(db) == 0 and usage(db) == 0
+
+
+@pytest.mark.parametrize(("reply", "expected"), [
+    ("One [S1]. Two [S2] and thr", "One [S1]. Two [S2]"),  # mid line markers keep what they cite
+    ("One [S1]. Two [S2]. Thr", "One [S1]. Two [S2]."),  # with the sentence's closing punctuation
+    ("One [S1].\nTwo [S2", "One [S1]."),  # a marker cut in half doesn't count
+    ("One [S1]. Two [S1][S", "One [S1]. Two [S1]"),  # the half marker after it is dropped
+    ("One [S1, S2], then more", "One [S1, S2]"),
+    ("One [S1]. Two [S9]. Three", "One [S1]."),  # only valid markers count
+    ("Intro line\nOne ([S2]). Two", "Intro line\nOne ([S2])."),
+    ("Nothing cited here", ""),
+    ("", ""),
+])
+def test_trim_at_last_marker(reply, expected):
+    assert trim_at_last_marker(reply, chunk_count=2) == expected
 
 
 @pytest.mark.parametrize(("reply", "expected"), [
     ("One [S1].\nTwo [S2]\nThr", "One [S1].\nTwo [S2]"),
-    ("One [S1].\nTwo [S2", "One [S1]."),  # a marker cut in half doesn't count
-    ("One [S1].\nTwo [S1][S", "One [S1]."),
-    ("One [S1, S2].\nTwo, with no marker", "One [S1, S2]."),
-    ("One [S1].\nTwo [S9].", "One [S1]."),  # only valid markers count
-    ("Intro line\nOne [S2]).\nTwo", "Intro line\nOne [S2])."),
+    ("One [S1].\nTwo [S2] and thr", "One [S1]."),  # a part summary keeps whole cited lines only
+    ("One [S1].\nTwo [S9].", "One [S1]."),
     ("Nothing cited here", ""),
-    ("", ""),
 ])
-def test_trim_truncated(reply, expected):
-    assert trim_truncated(reply, chunk_count=2) == expected
+def test_trim_to_cited_lines(reply, expected):
+    assert trim_to_cited_lines(reply, chunk_count=2) == expected

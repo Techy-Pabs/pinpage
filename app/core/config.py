@@ -69,8 +69,8 @@ class Settings(BaseSettings):
     ai_timeout_seconds: float = Field(default=45, gt=0, le=120)
     # Output limits, in tokens. The chat model reasons before it writes, and
     # the reasoning counts against the limit, so a long answer needs room for
-    # both. A reply cut off by the limit is trimmed to its last complete
-    # cited line. AI_MAX_TOKENS covers everything else (follow up rewrites).
+    # both. A reply cut off by the limit is trimmed after its last valid
+    # marker. AI_MAX_TOKENS covers everything else (follow up rewrites).
     ai_max_tokens: int = Field(default=1000, gt=0)
     ai_max_tokens_question: int = Field(default=2500, gt=0)
     ai_max_tokens_page: int = Field(default=4000, gt=0)

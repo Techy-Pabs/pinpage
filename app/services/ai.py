@@ -223,8 +223,9 @@ class OpenRouterAI(AIClient):
 
     # --- Chat ------------------------------------------------------------------------
 
-    def _reply_once(self, system_prompt: str, history: list[ChatMessage], max_tokens: int) -> ChatReply:
-        models = self.chat_models
+    def _reply_once(
+        self, system_prompt: str, history: list[ChatMessage], max_tokens: int, models: list[str]
+    ) -> ChatReply:
         response = self._call("reply", lambda: self.client.chat.completions.create(
             model=models[0],
             messages=[{"role": "system", "content": system_prompt}, *history],
@@ -258,8 +259,28 @@ class OpenRouterAI(AIClient):
         return ChatReply(reply.strip(), finish_reason)
 
     def generate(self, system_prompt: str, history: list[ChatMessage], max_tokens: int | None = None) -> ChatReply:
+        """The first attempt asks the primary model alone, so if it fails we
+        know why and log it; the second asks the fallback models (OpenRouter
+        tries them in order), or the primary again if there are none."""
         limit = max_tokens or self._max_tokens
-        return self._attempts("reply", lambda: self._reply_once(system_prompt, history, limit))
+        primary, fallbacks = self.chat_models[0], self.chat_models[1:]
+        attempts = 0
+
+        def request() -> ChatReply:
+            nonlocal attempts
+            attempts += 1
+            first = attempts == 1
+            try:
+                return self._reply_once(
+                    system_prompt, history, limit, [primary] if first or not fallbacks else fallbacks
+                )
+            except AIServiceError as error:
+                if first and fallbacks:
+                    # Our own message: a status code or an error type, never text
+                    logger.warning("AI primary chat model %s failed (%s); using the fallback models", primary, error)
+                raise
+
+        return self._attempts("reply", request)
 
     # --- Embeddings --------------------------------------------------------------------
 

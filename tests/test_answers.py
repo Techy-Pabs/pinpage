@@ -614,25 +614,27 @@ def test_the_prompt_allows_partial_answers_with_markers():
 
 # --- Replies cut off at the output limit -------------------------------------------------------
 
-def test_a_cut_off_answer_is_trimmed_to_its_last_cited_line(alice, ask, leave_conversation, fake_ai, monkeypatch):
+def test_a_cut_off_answer_keeps_everything_up_to_its_last_marker(alice, ask, leave_conversation, fake_ai, monkeypatch):
     from app.services.ai import ChatReply
 
     monkeypatch.setattr(settings, "ai_max_tokens_question", 333)
-    fake_ai.replies = [ChatReply("You can carry over five days [S1].\nSick leave needs a no", "length")]
+    fake_ai.replies = [ChatReply("You can carry over five days [S1], up to a limit [S1]. Sick leave needs a no", "length")]
 
     body = ask(alice, leave_conversation).json()
 
     assert fake_ai.reply_calls[0]["max_tokens"] == 333
-    assert body["content"] == "You can carry over five days [S1]."
+    assert body["content"] == "You can carry over five days [S1], up to a limit [S1]."
     assert body["outcome"] == "answered"
 
 
-def test_an_empty_cut_off_answer_is_not_found(alice, ask, leave_conversation, fake_ai):
+@pytest.mark.parametrize("text", ["", "You can carry over fi"])
+def test_a_cut_off_answer_with_nothing_cited_gives_503_and_saves_nothing(db, alice, ask, leave_conversation, fake_ai, text):
     from app.services.ai import ChatReply
 
-    fake_ai.replies = [ChatReply("", "length")]
+    fake_ai.replies = [ChatReply(text, "length")]
 
     response = ask(alice, leave_conversation)
 
-    assert response.status_code == 201
-    assert response.json()["content"] == NOT_FOUND_MESSAGE
+    assert response.status_code == 503 and response.json()["error"]["code"] == "ai_unavailable"
+    assert len(fake_ai.reply_calls) == 1
+    assert count(db, Message) == 0 and count(db, QuestionUsage) == 0

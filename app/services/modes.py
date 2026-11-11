@@ -15,8 +15,8 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models import Document, DocumentChunk, DocumentPage, DocumentSection, WorkspaceMember
 from app.models.conversation import OUTCOME_ANSWERED, OUTCOME_NOT_FOUND
-from app.services.ai import AIClient, ChatMessage
-from app.services.citations import cite, trim_truncated
+from app.services.ai import AIClient, AIServiceError, ChatMessage
+from app.services.citations import cite, trim_at_last_marker, trim_to_cited_lines
 from app.services.prompts import (
     NOT_FOUND_MESSAGE,
     build_combine_prompt,
@@ -50,19 +50,25 @@ def cited_or_not_found(reply: str, excerpts: list[RetrievedChunk], mode: str) ->
 
 
 def complete_reply(
-    ai: AIClient, system_prompt: str, messages: list[ChatMessage], max_tokens: int, excerpt_count: int, kind: str
+    ai: AIClient, system_prompt: str, messages: list[ChatMessage], max_tokens: int, excerpt_count: int, kind: str,
+    *, part: bool = False,
 ) -> str:
-    """The reply's text. One cut off at max_tokens is trimmed to its last line
-    ending with a valid marker ("" if none), never shown mid sentence."""
+    """The reply's text, never cut off mid sentence. An answer cut off at
+    max_tokens is trimmed to its last valid marker; one with nothing left is
+    an AIServiceError (503, nothing saved or counted), since "not found"
+    would be a false statement about the document. A part summary is
+    trimmed to its last cited line instead, and may come back empty."""
     reply = ai.generate(system_prompt, messages, max_tokens)
     if not reply.truncated:
         return reply.text
-    trimmed = trim_truncated(reply.text, excerpt_count)
-    # Line counts only, never the text
+    trimmed = (trim_to_cited_lines if part else trim_at_last_marker)(reply.text, excerpt_count)
+    # Lengths only, never the text
     logger.warning(
-        "%s reply cut off at max_tokens=%d: kept %d of %d lines",
-        kind, max_tokens, len(trimmed.splitlines()), len(reply.text.splitlines()),
+        "%s reply cut off at max_tokens=%d: kept %d of %d characters",
+        kind, max_tokens, len(trimmed), len(reply.text),
     )
+    if not trimmed and not part:
+        raise AIServiceError("reply cut off with nothing cited", retryable=False)
     return trimmed
 
 
@@ -303,15 +309,17 @@ def answer_section(
                     document.title, [(i, excerpts[i]) for i in part], part=number, parts=len(parts)
                 ),
                 [{"role": "user", "content": question}],
-                limit, len(excerpts), "Summary part",
+                limit, len(excerpts), "Summary part", part=True,
             )
             for number, part in enumerate(parts, start=1)
         ]
         # A part cut off with nothing left adds nothing to combine
         summaries = [summary for summary in summaries if summary]
+        if not summaries:
+            raise AIServiceError("every summary part was cut off with nothing cited", retryable=False)
         reply = complete_reply(
             ai, build_combine_prompt(document.title, summaries), request_messages, limit, len(excerpts), "Summary",
-        ) if summaries else ""
+        )
     logger.info("Section summary for document %s: %d excerpts in %d part(s)", document.id, len(excerpts), len(parts))
     return cited_or_not_found(reply, excerpts, MODE_SECTION)
 
