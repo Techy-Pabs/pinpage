@@ -133,8 +133,8 @@ def test_rebuild_refuses_when_chunk_boundaries_would_change(db, handbook, sessio
     make_it_look_old(db, handbook)
     before_sections = [(s.id, s.title, s.end_page) for s in sections_of(db, handbook)]
     before_chunks = chunk_state(db, handbook)
-    monkeypatch.setattr(settings, "chunk_size", 200)  # the same text would now be cut differently
-    monkeypatch.setattr(settings, "chunk_overlap", 20)
+    monkeypatch.setattr(settings, "chunk_size", 100)  # the same text would now be cut differently
+    monkeypatch.setattr(settings, "chunk_overlap", 10)
 
     with pytest.raises(documents_cli.RebuildRefused, match="Upload the document again"):
         documents_cli.rebuild_sections(session_factory, fake_storage, handbook)

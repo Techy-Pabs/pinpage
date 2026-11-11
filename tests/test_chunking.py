@@ -65,3 +65,64 @@ def test_label_for_embedding():
     assert section_label("Staff Handbook", "Section 4", "Section 4") == "Staff Handbook > Section 4"
     assert section_label("Staff Handbook", None, "Staff Handbook") == "Staff Handbook"
     assert embedding_input("Handbook > 1 Pay", "Paid monthly.") == "Handbook > 1 Pay\n\nPaid monthly."
+
+
+HEADER = "Lantern Hill College Staff Handbook"
+EDITION = "Edition 4, September 2026"
+
+
+def handbook_page(number: int, body: str) -> str:
+    """A page with a two line running header and a page number at the top."""
+    return f"{HEADER}\n{EDITION}\nPage {number}\n{body}"
+
+
+def test_running_headers_are_left_out_of_chunks_and_their_pages():
+    # Section 5.4 is all on page 2; page 3 starts with the running header,
+    # then section 5.5. The header must not stretch 5.4 onto page 3.
+    # "Ask your manager." repeats on every page, but inside the body text.
+    doc = DocumentText([
+        handbook_page(1, "5.3 Induction\nAsk your manager.\nNew staff meet their mentor in week one."),
+        handbook_page(2, "5.4 Probation\nAsk your manager.\nProbation lasts six months."),
+        handbook_page(3, "5.5 Training\nAsk your manager.\nTraining days are in August."),
+        handbook_page(4, "Book a place online.\nAsk your manager.\nEnd of training."),
+    ])
+    sections = detect_sections(doc, [], "Handbook")
+
+    chunks = build_chunks(doc, sections, chunk_size=1000, chunk_overlap=150)
+
+    by_section = {sections[c.section_index].number: c for c in chunks}
+    assert (by_section["5.4"].page_start, by_section["5.4"].page_end) == (2, 2)
+    assert by_section["5.4"].content == "5.4 Probation\nAsk your manager.\nProbation lasts six months."
+    # Across a page break the text joins up without the header in between
+    assert (by_section["5.5"].page_start, by_section["5.5"].page_end) == (3, 4)
+    assert by_section["5.5"].content == (
+        "5.5 Training\nAsk your manager.\nTraining days are in August.\n\n"
+        "Book a place online.\nAsk your manager.\nEnd of training."
+    )
+    for chunk in chunks:
+        assert HEADER not in chunk.content and EDITION not in chunk.content and "Page " not in chunk.content
+
+
+def test_footers_and_page_numbers_at_the_bottom_are_left_out_too():
+    parts = [("Welcome", "Welcome to the college."), ("Leave", "Leave is booked online."),
+             ("Pay", "Pay day is the 25th."), ("Pensions", "Ask HR about pensions.")]
+    pages = [f"{n}. {title}\n{body}\nConfidential - internal use\nPage {n} of 4" for n, (title, body) in enumerate(parts, 1)]
+    doc = DocumentText(pages)
+    sections = detect_sections(doc, [], "Handbook")
+
+    chunks = build_chunks(doc, sections, chunk_size=1000, chunk_overlap=150)
+
+    assert [c.content for c in chunks] == [f"{n}. {title}\n{body}" for n, (title, body) in enumerate(parts, 1)]
+    assert [(c.page_start, c.page_end) for c in chunks] == [(n, n) for n in range(1, 5)]
+
+
+def test_long_or_numeric_body_lines_are_never_taken_for_headers():
+    # The same long line ending every page, and a bare number in a document
+    # whose pages aren't numbered, are body text
+    doc = DocumentText([f"1. Fees\nThe fee is:\n250\n{SENTENCE * 2}", f"2. Dates\n{SENTENCE * 2}", f"3. More\n{SENTENCE * 2}"])
+    sections = detect_sections(doc, [], "Handbook")
+
+    chunks = build_chunks(doc, sections, chunk_size=1000, chunk_overlap=150)
+
+    assert chunks[0].content == f"1. Fees\nThe fee is:\n250\n{(SENTENCE * 2).strip()}"
+    assert all(c.content.endswith(SENTENCE.strip()) for c in chunks)

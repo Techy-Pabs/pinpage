@@ -151,6 +151,8 @@ docker compose exec api python -m app.cli.documents rebuild-sections <document_i
 
 It reads the PDF from storage only for its bookmarks, moves each chunk to its new section, and changes no chunk text or embedding. If the new sections would cut the text into different chunks, it refuses and changes nothing: upload that document again instead. It prints counts only, never document text.
 
+Running headers, footers and page numbers are left out of chunks, so they no longer stretch a citation onto the next page (a section all on page 12 was cited as pages 12 to 13). Documents processed before that change keep their old chunks and are not re-embedded automatically; upload such a document again to benefit. The rebuild command refuses them, since their chunks would change.
+
 ## Making an admin
 
 Accounts are created by registering. To make one an admin (or undo it):

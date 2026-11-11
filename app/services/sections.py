@@ -177,6 +177,54 @@ def _repeated_lines(pages: list[str]) -> set[str]:
     return {key for key, count in seen.items() if count >= threshold}
 
 
+# A page number line: "13", "Page 13", "13 of 20", "Page 13 / 20"
+_PAGE_NUMBER_LINE = re.compile(r"^(?:page\s+)?\d{1,4}(?:\s*(?:of|/)\s*\d{1,4})?$", re.IGNORECASE)
+# Where a page number is looked for: this many non-empty lines at the top
+# and at the bottom of each page
+PAGE_EDGE_LINES = 3
+
+
+def _page_lines(page: str, page_start: int) -> list[tuple[int, int, str]]:
+    """(start, end, line) of each non-empty line, as offsets in the joined text."""
+    lines, offset = [], page_start
+    for line in page.split("\n"):
+        if line.strip():
+            lines.append((offset, offset + len(line), line))
+        offset += len(line) + 1
+    return lines
+
+
+def running_line_spans(doc: DocumentText) -> list[tuple[int, int]]:
+    """Where the running headers and footers are in doc.text, as (start, end)
+    offsets, in order: the lines at the top and the bottom of each page that
+    repeat on many pages, or are page numbers when many pages have one.
+    Only those runs count (at most PAGE_EDGE_LINES lines each), and only
+    short lines, so a repeated line of body text stays."""
+    repeated = _repeated_lines(doc.pages)
+    pages = [_page_lines(page, start) for page, start in zip(doc.pages, doc.page_starts)]
+    numbered = sum(
+        any(_PAGE_NUMBER_LINE.match(line.strip()) for _, _, line in lines[:PAGE_EDGE_LINES] + lines[-PAGE_EDGE_LINES:])
+        for lines in pages
+    )
+    numbers_repeat = len(doc.pages) >= 3 and numbered >= max(3, int(0.3 * len(doc.pages)))
+
+    def running(line: str) -> bool:
+        if len(line.strip()) > MAX_HEADING_LINE:
+            return False
+        return _repeat_key(line) in repeated or (numbers_repeat and bool(_PAGE_NUMBER_LINE.match(line.strip())))
+
+    spans: list[tuple[int, int]] = []
+    for lines in pages:
+        top = 0
+        while top < min(len(lines), PAGE_EDGE_LINES) and running(lines[top][2]):
+            top += 1
+        bottom = len(lines)
+        while bottom > max(top, len(lines) - PAGE_EDGE_LINES) and running(lines[bottom - 1][2]):
+            bottom -= 1
+        spans.extend((start, end) for start, end, _ in lines[:top] + lines[bottom:])
+    return spans
+
+
 def _repeat_key(line: str) -> str:
     # Exact apart from spacing and case. Digits count: "Chapter 1" and
     # "Chapter 2" are different headings, while a running header that looks
