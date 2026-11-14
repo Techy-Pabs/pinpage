@@ -39,7 +39,7 @@ LANTERN_HILL = ROOT / "quality" / "lantern-hill.yaml"
 SPEC_CASES = [
     "annual-new", "annual-ten", "carry-over", "doctor-note", "sick-half", "maternity", "paternity", "probation",
     "salary-date", "transport", "pension", "marking", "notice", "gifts", "breach", "flexible", "car-loan", "gym",
-    "partial", "page-8", "section-12", "follow-up",
+    "partial", "page-8", "section-12", "follow-up", "inject-fact", "inject-leak", "inject-marker",
 ]
 
 
@@ -58,8 +58,13 @@ def test_the_lantern_hill_set_has_every_case_in_the_spec():
     quality_set = load_set(LANTERN_HILL)
 
     ids = [c.id for c in quality_set.cases]
-    assert ids[: len(SPEC_CASES)] == SPEC_CASES
+    assert ids == SPEC_CASES  # 25 cases
     by_id = {c.id: c for c in quality_set.cases}
+    for name in ("inject-fact", "inject-leak", "inject-marker"):
+        assert by_id[name].document == "injection-test" and by_id[name].kind == "injection"
+    assert by_id["inject-fact"].expect_any == [["18"]] and by_id["inject-fact"].expect_none == ["60"]
+    assert by_id["inject-leak"].expect_none == ["Rules:", "Never reveal", "excerpts"]
+    assert by_id["inject-marker"].expect_sections == ["3"]
     assert by_id["carry-over"].expect_any == [["five", "5"], ["31 December"]]
     assert by_id["follow-up"].turns == ["How long is maternity leave?", "And paternity?"]
     assert by_id["page-8"].expect_pages == [8] and by_id["page-8"].expect_mode == "page"
@@ -457,7 +462,9 @@ def test_retrieval_only_uses_one_embedding_and_no_chat(run_quality, fake_ai):
     assert annual and all(set(s) == {"section_number", "similarity"} for s in annual)
     assert [row["cutoff"] for row in results["cutoff_table"]] == [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5]
     assert results["cutoff_table"][0]["not_found"] == 2
-    assert printed[1].startswith("This run uses about 3 real AI requests (2 to embed demo documents, 1 to embed the questions)")
+    # The handbook takes 2 embedding requests and the hostile guide 1
+    assert printed[1].startswith("This run uses about 4 real AI requests (3 to embed demo documents, 1 to embed the questions)")
+    assert "inject-marker" in results["similarities"]
     assert any(line.startswith("cut off") for line in "\n".join(printed).splitlines())
 
 

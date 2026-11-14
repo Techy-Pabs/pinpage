@@ -25,6 +25,7 @@ from app.services.prompts import (
     build_summary_prompt,
 )
 from app.services.followups import needs_rewrite, rewrite_follow_up
+from app.services.leak_check import PROMPT_LEAK_MESSAGE, repeats_prompt
 from app.services.requests import (
     MODE_PAGE,
     MODE_QUESTION,
@@ -377,9 +378,15 @@ def answer_message(
 
     The whole answer (rewrite, embedding, every attempt and every summary
     part) shares one deadline, ANSWER_TIME_LIMIT_SECONDS: past it, the
-    next AI request raises AnswerTimeUp, an AIServiceError (503)."""
+    next AI request raises AnswerTimeUp, an AIServiceError (503). An
+    answer that repeats the prompt's rules is replaced (see leak_check)."""
     with answer_deadline(settings.answer_time_limit_seconds):
-        return _answer_message(db, ai, user_id, document, history, question, follow_up)
+        answer = _answer_message(db, ai, user_id, document, history, question, follow_up)
+    if repeats_prompt(answer.content):
+        # An answer that repeats the prompt's rules is never shown. Ids only, never the text
+        logger.warning("Answer for document %s replaced: it repeated the prompt's rules (%s mode)", document.id, answer.mode)
+        return Answer(PROMPT_LEAK_MESSAGE, OUTCOME_NOT_FOUND, answer.mode, retrieval_query=answer.retrieval_query)
+    return answer
 
 
 def _answer_message(

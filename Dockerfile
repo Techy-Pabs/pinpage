@@ -27,6 +27,9 @@ COPY tests ./tests
 # The quality check's question sets and the demo documents they ask about
 COPY quality ./quality
 COPY docs/demo ./docs/demo
+# make_injection_pdf.py needs reportlab, which only this image has; a test
+# checks the committed hostile demo PDF is what it builds
+COPY scripts ./scripts
 
 CMD ["pytest"]
 
