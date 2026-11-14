@@ -107,7 +107,7 @@ def test_embedding_adds_the_nemotron_prefix_and_keeps_the_order():
     vectors = ai.embed_batch(["first", "second"], "document")
 
     assert vectors == [[1, 0, 0, 0], [0, 1, 0, 0]]
-    assert calls == [{"model": "nvidia/nemotron-3-embed-1b:free", "input": ["passage: first", "passage: second"]}]
+    assert calls == [{"model": "nvidia/nemotron-3-embed-1b:free", "input": ["passage: first", "passage: second"], "timeout": 45}]
     assert ai.pacer.waits == 1
 
 

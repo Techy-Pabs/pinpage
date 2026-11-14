@@ -29,6 +29,7 @@ FAILURE_MESSAGES = {
     "encrypted": "This PDF is password protected. Remove the password and upload it again.",
     "no_text_layer": "This looks like a scanned document. Pinpage can't read scans yet.",
     "unreadable": "We couldn't read this PDF. It may be damaged.",
+    "too_complex": "This PDF took too long to read. Try saving it again as a new PDF, or upload a shorter file.",
     "interrupted": "Processing was interrupted. Try again.",
     "ai_unavailable": "Pinpage couldn't prepare this document for questions right now. Try again later.",
 }

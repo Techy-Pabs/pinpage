@@ -10,6 +10,10 @@ never a provider's error text, a key or the text that was sent.
 Every request is paced (at most AI_REQUESTS_PER_MINUTE across the whole
 process) and gets at most 2 attempts in total, so a busy free model can't
 use up the daily allowance on retries.
+
+Inside answer_deadline (one per answer), every request also shares the
+answer's deadline: its timeout shrinks to the time left, and none is sent
+once the time is up.
 """
 
 import hashlib
@@ -18,7 +22,9 @@ import re
 import threading
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Literal, TypeVar
@@ -112,6 +118,55 @@ def _is_daily_limit(error: "openai.APIStatusError") -> bool:
     if error.status_code != 429:
         return False
     return bool(_PER_DAY.search(f"{error.message} {error.body}"))
+
+
+class AnswerTimeUp(AIServiceError):
+    """The answer's deadline (ANSWER_TIME_LIMIT_SECONDS) has passed, so no
+    further request is sent. Never retried."""
+
+    def __init__(self):
+        super().__init__("answer time limit reached", retryable=False)
+
+
+class Deadline:
+    """A point in time by which the whole answer must be finished."""
+
+    def __init__(self, seconds: float, clock: Callable[[], float] = time.monotonic):
+        self._clock = clock
+        self._ends_at = clock() + seconds
+
+    def remaining(self) -> float:
+        return self._ends_at - self._clock()
+
+
+# The deadline of the answer being worked on in this thread, if any
+_deadline: ContextVar[Deadline | None] = ContextVar("answer_deadline", default=None)
+
+
+@contextmanager
+def answer_deadline(seconds: float, clock: Callable[[], float] = time.monotonic) -> Iterator[Deadline]:
+    """Every AI request made inside this block shares one deadline: each
+    one's timeout is the smaller of its usual timeout and the time left,
+    and once no time is left, requests raise AnswerTimeUp."""
+    deadline = Deadline(seconds, clock)
+    token = _deadline.set(deadline)
+    try:
+        yield deadline
+    finally:
+        _deadline.reset(token)
+
+
+def request_timeout(usual: float) -> float:
+    """The timeout for the next AI request: usual, or less if the answer's
+    deadline is closer. Raises AnswerTimeUp when no time is left."""
+    deadline = _deadline.get()
+    if deadline is None:
+        return usual
+    left = deadline.remaining()
+    if left <= 0:
+        logger.warning("AI request not sent: the answer time limit has passed")
+        raise AnswerTimeUp()
+    return min(usual, left)
 
 
 class RequestPacer:
@@ -254,10 +309,12 @@ class OpenRouterAI(AIClient):
     def _reply_once(
         self, system_prompt: str, history: list[ChatMessage], max_tokens: int, models: list[str]
     ) -> ChatReply:
+        timeout = request_timeout(self._timeout_seconds)
         response = self._call("reply", lambda: self.client.chat.completions.create(
             model=models[0],
             messages=[{"role": "system", "content": system_prompt}, *history],
             max_tokens=max_tokens,
+            timeout=timeout,
             # OpenRouter's fallback list: if the first model can't answer
             # (for example its provider is down), the next one is tried
             **({"extra_body": {"models": models}} if len(models) > 1 else {}),
@@ -321,9 +378,11 @@ class OpenRouterAI(AIClient):
 
     def _embed_once(self, texts: list[str], mode: EmbeddingMode) -> list[list[float]]:
         prefix = _NEMOTRON_PREFIXES[mode] if "nemotron" in self.embedding_model else ""
+        timeout = request_timeout(self._timeout_seconds)
         response = self._call("embedding", lambda: self.client.embeddings.create(
             model=self.embedding_model,
             input=[prefix + text for text in texts],
+            timeout=timeout,
         ))
         # Results carry their position; sort so they line up with the texts
         vectors = [item.embedding for item in sorted(response.data or [], key=lambda d: d.index)]
@@ -361,8 +420,15 @@ class FakeAI(AIClient):
     replies = [...] answers the next chat requests in turn (an exception in
     the list is raised instead, and a ChatReply such as
     ChatReply("...", "length") stands for a reply cut off at max_tokens),
-    then reply answers the rest.
+    then reply answers the rest;
+    delay = seconds makes every request that slow, as a slow model would
+    be: one that would run past the answer's deadline waits out the time
+    left and then fails like a timeout. timeouts records each request's
+    timeout.
     """
+
+    # Stands in for AI_TIMEOUT_SECONDS
+    usual_timeout = 45.0
 
     def __init__(self, dimensions: int = 2048):
         self.dimensions = dimensions
@@ -373,8 +439,21 @@ class FakeAI(AIClient):
         self.embed_calls: list[dict] = []
         self.vectors: dict[str, list[float]] = {}
         self.replies: list[str | ChatReply | Exception] = []
+        self.delay = 0.0
+        self.timeouts: list[float] = []
+
+    def _wait(self) -> None:
+        """The request's time, honouring the answer's deadline."""
+        timeout = request_timeout(self.usual_timeout)  # AnswerTimeUp: never sent
+        self.timeouts.append(timeout)
+        if self.delay > timeout:
+            time.sleep(timeout)
+            raise AIServiceError("request failed (APITimeoutError)")
+        if self.delay:
+            time.sleep(self.delay)
 
     def generate(self, system_prompt: str, history: list[ChatMessage], max_tokens: int | None = None) -> ChatReply:
+        self._wait()
         self.reply_calls.append({"system_prompt": system_prompt, "history": history, "max_tokens": max_tokens})
         if "reply" in self.fail_on:
             raise AIServiceError("simulated outage")
@@ -384,6 +463,7 @@ class FakeAI(AIClient):
         return reply if isinstance(reply, ChatReply) else ChatReply(reply)
 
     def embed_batch(self, texts: list[str], mode: EmbeddingMode) -> list[list[float]]:
+        self._wait()
         if "embed" in self.fail_on or (
             self.fail_after_batches is not None and len(self.embed_calls) >= self.fail_after_batches
         ):

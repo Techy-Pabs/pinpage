@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models import Document, DocumentChunk, DocumentPage, DocumentSection, WorkspaceMember
 from app.models.conversation import OUTCOME_ANSWERED, OUTCOME_NOT_FOUND
-from app.services.ai import AIClient, AIServiceError, ChatMessage
+from app.services.ai import AIClient, AIServiceError, ChatMessage, answer_deadline
 from app.services.citations import cite, trim_at_last_marker, trim_to_cited_lines
 from app.services.prompts import (
     NOT_FOUND_MESSAGE,
@@ -373,7 +373,19 @@ def answer_message(
 
     Used by the ask route and by the quality check, which calls it directly
     so that quality runs never count toward a user's daily limit. Nothing is
-    saved here."""
+    saved here.
+
+    The whole answer (rewrite, embedding, every attempt and every summary
+    part) shares one deadline, ANSWER_TIME_LIMIT_SECONDS: past it, the
+    next AI request raises AnswerTimeUp, an AIServiceError (503)."""
+    with answer_deadline(settings.answer_time_limit_seconds):
+        return _answer_message(db, ai, user_id, document, history, question, follow_up)
+
+
+def _answer_message(
+    db: Session, ai: AIClient, user_id: uuid.UUID, document: Document, history: list[ChatMessage],
+    question: str, follow_up: bool,
+) -> Answer:
     sections = section_infos(db, user_id, document.id)
     db.commit()  # no transaction stays open while the AI works
 

@@ -78,6 +78,7 @@ A document in a response has: `id`, `title`, `original_filename`, `size_bytes`, 
 | `encrypted` | Needs a password to open (a PDF that opens with an empty password is read normally) |
 | `no_text_layer` | At least 80% of pages have fewer than 20 characters: probably a scan |
 | `unreadable` | The PDF is damaged: pypdf can't open it |
+| `too_complex` | Reading the PDF took longer than `PDF_PARSE_TIME_LIMIT_SECONDS` (it is read in a separate process, which is stopped). Can't be retried: save it again as a new PDF, or upload a shorter file |
 | `interrupted` | The file couldn't be read from storage, the database failed during processing, or the document was still processing `PROCESSING_TIMEOUT_MINUTES` after its upload or retry (e.g. because the server restarted; checked when the app starts). Can be retried |
 | `ai_unavailable` | Embeddings couldn't be created (OpenRouter down, rate limited, or no key). Can be retried |
 
@@ -94,6 +95,7 @@ All set in `.env`, so they change without code changes:
 | `MAX_DOCUMENTS_PER_WORKSPACE` | 10 | Processing and ready documents per workspace (failed ones don't count) |
 | `SIGNED_URL_SECONDS` | 300 | How long a link to an original file works |
 | `PROCESSING_TIMEOUT_MINUTES` | 15 | When a document still processing counts as interrupted |
+| `PDF_PARSE_TIME_LIMIT_SECONDS` | 60 | Longest time reading one PDF may take, in a separate process; then it fails with `too_complex` |
 | `JWT_EXPIRE_MINUTES` | 30 | How long a login lasts |
 | `CHUNK_SIZE`, `CHUNK_OVERLAP` | 1000, 150 | Characters per chunk, and characters neighbouring chunks share |
 | `EMBEDDING_BATCH_SIZE` | 64 | Chunks per embedding request |
@@ -101,6 +103,7 @@ All set in `.env`, so they change without code changes:
 | `RETRIEVAL_TOP_K` | 6 | Excerpts of the document sent with a question at most |
 | `RETRIEVAL_MIN_SIMILARITY` | 0.30 | How similar an excerpt must be to be used (ShopAssist's tuned value) |
 | `DAILY_QUESTIONS_PER_USER` | 20 | Questions per user per day, counted in UTC (429 after that) |
+| `ANSWER_TIME_LIMIT_SECONDS` | 90 | Longest time one answer may take, across all its AI requests (rewrite, embedding, every attempt, every summary part). Each request's timeout shrinks to the time left; past it, 503 `ai_unavailable` with nothing saved or counted |
 | `MAX_PAGES_PER_QUESTION` | 3 | Pages read for one page question; more are cut, with a note in the answer |
 | `SUMMARY_PART_CHARS` | 12000 | Characters per summary part; a longer section is summarised in parts, then combined |
 | `AI_MAX_TOKENS_QUESTION`, `AI_MAX_TOKENS_PAGE`, `AI_MAX_TOKENS_SUMMARY` | 2500, 4000, 5000 | Output tokens for an answer, a page answer and each summary request. The model's reasoning counts too. A reply cut off by its limit is not retried: it is trimmed after its last valid marker, or, with nothing cited, gives 503 `ai_unavailable` (nothing saved or counted) |

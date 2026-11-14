@@ -17,7 +17,7 @@ from app.dependencies import get_session_factory
 from app.main import app
 from app.models import Document, DocumentChunk, DocumentPage, DocumentSection
 from app.models.document import STATUS_FAILED, STATUS_PROCESSING, STATUS_READY
-from app.services import processing
+from app.services import pdf_text, processing
 from app.services.processing import ProcessingFailed, extract_pages, mark_stuck_documents, process_document
 from tests.pdfs import LONG_TEXT, damaged_pdf, encrypted_pdf, image_only_pdf, make_pdf, outlined_pdf, text_pdf
 
@@ -143,7 +143,7 @@ def test_page_limit_message_follows_the_setting(db, upload, monkeypatch):
     ],
 )
 def test_scan_detection(texts, scanned):
-    assert processing.looks_scanned(texts) is scanned
+    assert pdf_text.looks_scanned(texts) is scanned
 
 
 def test_nul_characters_are_removed_before_saving(monkeypatch):
@@ -158,7 +158,7 @@ def test_nul_characters_are_removed_before_saving(monkeypatch):
         def __init__(self, stream):
             pass
 
-    monkeypatch.setattr(processing, "PdfReader", Reader)
+    monkeypatch.setattr(pdf_text, "PdfReader", Reader)
 
     texts = extract_pages(b"%PDF-", max_pages=100).texts
 
@@ -174,7 +174,7 @@ def test_pdf_with_no_pages_is_unreadable(monkeypatch):
         def __init__(self, stream):
             pass
 
-    monkeypatch.setattr(processing, "PdfReader", Reader)
+    monkeypatch.setattr(pdf_text, "PdfReader", Reader)
 
     with pytest.raises(ProcessingFailed) as failure:
         extract_pages(b"%PDF-", max_pages=100)

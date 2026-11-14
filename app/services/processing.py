@@ -1,6 +1,7 @@
 """Background processing of an uploaded document, in three stages:
 
-1. Extract pages: read the PDF from storage and extract each page's text.
+1. Extract pages: read the PDF from storage and extract each page's text,
+   in a separate process stopped after PDF_PARSE_TIME_LIMIT_SECONDS.
 2. Find sections and build chunks (no AI requests).
 3. Create embeddings for the chunks (AI requests, batched and paced).
 
@@ -14,13 +15,11 @@ error's message can include the page text it was saving); only ids, codes
 and exception type names.
 """
 
-import io
 import logging
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from pypdf import PasswordType, PdfReader
 from sqlalchemy import delete, exists, func, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -35,107 +34,27 @@ from app.models.document import (
 )
 from app.services.ai import AIClient, AIServiceError
 from app.services.chunking import ChunkDraft, build_chunks, embedding_input, section_label
-from app.services.sections import DocumentText, OutlineEntry, Section, detect_sections
+from app.services.pdf_text import (  # noqa: F401 (re-exported for callers of processing)
+    MIN_CHARS_PER_PAGE,
+    ExtractedPdf,
+    ProcessingFailed,
+    extract_pages,
+    read_outline,
+    read_pdf_with_time_limit,
+)
+from app.services.sections import DocumentText, Section, detect_sections
 from app.services.storage import Storage, StorageError
 
 logger = logging.getLogger(__name__)
-
-# A page with fewer characters than this (ignoring spaces) has no real text
-MIN_CHARS_PER_PAGE = 20
-# If at least this share of pages have no real text, it's a scan
-SCANNED_SHARE = 0.8
-
-
-class ProcessingFailed(Exception):
-    """Processing failed for a reason the user is told about by its code."""
-
-    def __init__(self, code: str):
-        super().__init__(code)
-        self.code = code
 
 
 def failure_message(code: str) -> str:
     return FAILURE_MESSAGES[code].format(max_pages=settings.max_pages)
 
 
-# --- Reading the PDF (no database, no storage) -------------------------------------
-
-def looks_scanned(texts: list[str]) -> bool:
-    empty = sum(1 for text in texts if len(text.strip()) < MIN_CHARS_PER_PAGE)
-    return empty >= SCANNED_SHARE * len(texts)
-
-
-# Outlines deeper or longer than this are cut short, so a hostile file
-# can't make reading the outline expensive
-MAX_OUTLINE_DEPTH = 10
-MAX_OUTLINE_ENTRIES = 1000
-
-
-@dataclass
-class ExtractedPdf:
-    texts: list[str]  # one per page, in order
-    outline: list[OutlineEntry] = field(default_factory=list)
-
-
-def read_outline(reader: PdfReader) -> list[OutlineEntry]:
-    """The PDF's bookmarks, if it has any. Never fails: a broken outline
-    just means sections come from the text instead."""
-    entries: list[OutlineEntry] = []
-
-    def walk(items, level: int) -> None:
-        if level > MAX_OUTLINE_DEPTH:
-            return
-        for item in items:
-            if len(entries) >= MAX_OUTLINE_ENTRIES:
-                return
-            if isinstance(item, list):
-                walk(item, level + 1)  # the children of the entry before it
-                continue
-            page = reader.get_destination_page_number(item)
-            title = str(getattr(item, "title", "") or "").replace("\x00", "")
-            if title.strip() and page is not None and page >= 0:
-                entries.append(OutlineEntry(title=title, level=level, page=page + 1))
-
-    try:
-        walk(reader.outline, 1)
-    except Exception as error:
-        logger.info("Ignoring an unreadable outline (%s)", type(error).__name__)
-        return []
-    return entries
-
-
-def extract_pages(data: bytes, max_pages: int) -> ExtractedPdf:
-    """The text of each page, in order, and the outline. Raises ProcessingFailed."""
-    try:
-        reader = PdfReader(io.BytesIO(data))
-        if reader.is_encrypted:
-            # Many PDFs are encrypted only to restrict printing or copying,
-            # with an empty password for opening; those are readable
-            try:
-                unlocked = reader.decrypt("") != PasswordType.NOT_DECRYPTED
-            except Exception:
-                unlocked = False
-            if not unlocked:
-                raise ProcessingFailed("encrypted")
-
-        page_count = len(reader.pages)
-        if page_count == 0:
-            raise ProcessingFailed("unreadable")
-        if page_count > max_pages:
-            raise ProcessingFailed("too_many_pages")
-
-        # PostgreSQL can't store NUL characters in text
-        texts = [(page.extract_text() or "").replace("\x00", "") for page in reader.pages]
-    except ProcessingFailed:
-        raise
-    except Exception:
-        # Anything pypdf trips over: damaged or unsupported files
-        raise ProcessingFailed("unreadable") from None
-
-    if looks_scanned(texts):
-        raise ProcessingFailed("no_text_layer")
-    return ExtractedPdf(texts=texts, outline=read_outline(reader))
-
+# --- Sections and chunks (stage 2) ----------------------------------------------------------
+# Stage 1, reading the PDF, is in app.services.pdf_text: it runs in a
+# separate process with a time limit.
 
 @dataclass
 class Prepared:
@@ -335,7 +254,7 @@ def process_document(
                 _finish_failed(session_factory, document_id, "interrupted")
                 return
             try:
-                extracted = extract_pages(data, settings.max_pages)
+                extracted = read_pdf_with_time_limit(data, settings.max_pages, settings.pdf_parse_time_limit_seconds)
             except ProcessingFailed as failure:
                 _finish_failed(session_factory, document_id, failure.code)
                 return

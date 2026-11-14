@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     # processing after the timeout is marked interrupted when the app starts.
     max_pages: int = Field(default=100, gt=0)
     processing_timeout_minutes: int = Field(default=15, gt=0)
+    # Reading one PDF runs in a separate process, stopped after this long;
+    # the document then fails with too_complex
+    pdf_parse_time_limit_seconds: float = Field(default=60, gt=0, le=600)
 
     # Chunking: about this many characters per chunk, with this much
     # repeated between neighbours so a sentence cut at a boundary isn't lost
@@ -87,6 +90,10 @@ class Settings(BaseSettings):
     # 0.30 is ShopAssist's tuned value; tuned for Pinpage in Milestone 4.
     retrieval_top_k: int = Field(default=6, gt=0, le=20)
     retrieval_min_similarity: float = Field(default=0.30, ge=-1, le=1)
+    # The whole answer to one question (rewrite, embedding, every attempt
+    # and every summary part) must finish within this, or it is 503
+    # ai_unavailable with nothing saved or counted
+    answer_time_limit_seconds: float = Field(default=90, gt=0, le=600)
     # Questions per user per day (UTC), to protect the shared free allowance
     daily_questions_per_user: int = Field(default=20, gt=0)
 
