@@ -46,8 +46,8 @@ Every document endpoint needs a login (`Authorization: Bearer <token>`). Swagger
 
 | Method and path | What it does | Success | Main errors |
 | --- | --- | --- | --- |
-| POST /auth/register | Creates an account, its personal workspace and the owner membership, in one transaction | 201 | 409 `email_taken`, 422 |
-| POST /auth/login | Returns a JWT | 200 | 401 `invalid_credentials` |
+| POST /auth/register | Creates an account, its personal workspace and the owner membership, in one transaction | 201 | 409 `email_taken`, 422, 429 `too_many_attempts` |
+| POST /auth/login | Returns a JWT | 200 | 401 `invalid_credentials`, 429 `too_many_attempts` |
 | GET /auth/me | The logged in user | 200 | 401 |
 | POST /documents | Uploads a PDF (multipart form: `file`, optional `title`) | 202, status `processing` | 400 `not_pdf`, 403 `document_limit_reached`, 409 `duplicate_document`, 413 `file_too_large`, 502 `storage_error` |
 | GET /documents | Your documents, newest first | 200 | 401 |
@@ -97,6 +97,9 @@ All set in `.env`, so they change without code changes:
 | `PROCESSING_TIMEOUT_MINUTES` | 15 | When a document still processing counts as interrupted |
 | `PDF_PARSE_TIME_LIMIT_SECONDS` | 60 | Longest time reading one PDF may take, in a separate process; then it fails with `too_complex` |
 | `JWT_EXPIRE_MINUTES` | 30 | How long a login lasts |
+| `LOGIN_ATTEMPTS_PER_15_MIN` | 10 | Failed logins per email and per IP address in any 15 minutes; then 429 `too_many_attempts` with `Retry-After`. A successful login doesn't count |
+| `REGISTRATIONS_PER_HOUR` | 5 | Registration attempts per IP address in an hour (taken emails count too); then 429 `too_many_attempts` |
+| `TRUST_PROXY_HEADERS` | false | Set to true only behind a proxy that sets `X-Forwarded-For`: the client's IP address is then the last address in it. Otherwise the header is ignored |
 | `CHUNK_SIZE`, `CHUNK_OVERLAP` | 1000, 150 | Characters per chunk, and characters neighbouring chunks share |
 | `EMBEDDING_BATCH_SIZE` | 64 | Chunks per embedding request |
 | `AI_REQUESTS_PER_MINUTE` | 15 | AI requests a minute at most, safely under OpenRouter's 20. Each request gets at most 2 attempts |
@@ -191,6 +194,7 @@ The change takes effect on the user's next request; no new login is needed.
 
 - Passwords are hashed with Argon2 and never returned or echoed in error messages.
 - Every login or token failure gets the same 401, and an unknown email costs as much time as a wrong password, so the API doesn't reveal which emails have accounts.
+- Failed logins are limited per email and per IP address, and registrations per IP address. The 429 is the same whether or not the email has an account. The counts are kept in memory, which is right for the single worker the app runs; before running several workers or instances they must move to a shared store such as Redis, or each one would allow the full limit.
 - Admin rights are read from the database on every request, not from the token.
 - All ids are UUIDs, so they cannot be guessed by counting.
 - Every documents query joins on workspace membership, so a document you can't reach is never even loaded. Someone else's document, a missing one and a malformed id all get the same 404.

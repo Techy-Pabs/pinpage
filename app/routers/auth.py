@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core import rate_limits
 from app.core.errors import ApiError
 from app.core.security import (
     DUMMY_HASH,
@@ -45,9 +46,14 @@ def violates_unique_email(error: IntegrityError) -> bool:
 @router.post(
     "/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED, summary="Create an account"
 )
-def register(body: RegisterRequest, db: Session = Depends(get_db)):
+def register(body: RegisterRequest, request: Request, db: Session = Depends(get_db)):
     """Creates the account, its personal workspace and the owner membership
-    together, or none of them. 409 email_taken if the email is registered."""
+    together, or none of them. 409 email_taken if the email is registered.
+    429 too_many_attempts, with Retry-After, after REGISTRATIONS_PER_HOUR
+    attempts from one IP address in an hour."""
+    # Every attempt counts, taken emails included, so registering can't be
+    # used to test many emails quickly
+    rate_limits.check_and_record_registration(rate_limits.client_ip(request))
     if email_registered(db, body.email):
         raise email_taken()
 
@@ -74,15 +80,23 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=TokenResponse, summary="Log in")
-def login(body: LoginRequest, db: Session = Depends(get_db)):
+def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
     """Returns a bearer token (a JWT) valid for JWT_EXPIRE_MINUTES. Use the
-    Authorize button with it. A wrong email or password gets the same 401."""
+    Authorize button with it. A wrong email or password gets the same 401.
+    429 too_many_attempts, with Retry-After, after LOGIN_ATTEMPTS_PER_15_MIN
+    failed logins for one email or from one IP address in 15 minutes; the
+    same message whether or not the email has an account. A successful
+    login doesn't count."""
+    ip = rate_limits.client_ip(request)
+    rate_limits.check_login(body.email, ip)
     user = db.scalar(select(User).where(User.email == body.email))
 
     if user is None:
         verify_password(body.password, DUMMY_HASH)
+        rate_limits.record_failed_login(body.email, ip)
         raise invalid_credentials()
     if not verify_password(body.password, user.password_hash):
+        rate_limits.record_failed_login(body.email, ip)
         raise invalid_credentials()
 
     return TokenResponse(access_token=create_access_token(user.id))

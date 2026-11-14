@@ -10,6 +10,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
+from app.core import rate_limits
 from app.core.config import settings
 from app.db.base import Base
 from app.dependencies import get_ai, get_db, get_storage
@@ -85,6 +86,22 @@ def client(session_factory, monkeypatch):
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def rate_limits_out_of_the_way(monkeypatch):
+    """Used automatically by every test: the in memory login and
+    registration limits start empty, and are high enough that tests
+    registering many users never reach them. The rate limit tests set
+    their own limits."""
+    rate_limits.failed_logins.clear()
+    rate_limits.registrations.clear()
+    monkeypatch.setattr(settings, "login_attempts_per_15_min", 1000)
+    monkeypatch.setattr(settings, "registrations_per_hour", 1000)
+    monkeypatch.setattr(settings, "trust_proxy_headers", False)
+    yield
+    rate_limits.failed_logins.clear()
+    rate_limits.registrations.clear()
 
 
 @pytest.fixture(autouse=True)

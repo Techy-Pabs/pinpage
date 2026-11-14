@@ -22,6 +22,14 @@ class Settings(BaseSettings):
 
     # How long a login token stays valid
     jwt_expire_minutes: int = 30
+    # Failed logins allowed per email and per IP address in 15 minutes, and
+    # registrations per IP address in an hour; then 429 too_many_attempts.
+    # Kept in memory (one worker; see app.core.rate_limits)
+    login_attempts_per_15_min: int = Field(default=10, gt=0)
+    registrations_per_hour: int = Field(default=5, gt=0)
+    # true only behind a proxy that sets X-Forwarded-For: the client's IP
+    # address is then the last one in it, not the connection's
+    trust_proxy_headers: bool = False
 
     # Cloudflare R2, where the original PDFs are stored. All required.
     r2_account_id: str
