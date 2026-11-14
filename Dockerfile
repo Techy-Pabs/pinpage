@@ -11,24 +11,31 @@ WORKDIR /code
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY alembic.ini .
-COPY alembic ./alembic
-COPY app ./app
-
 # --- test: base plus test tools and the tests (used by the "tests" service) ---
 FROM base AS test
 
 COPY requirements-dev.txt .
 RUN pip install --no-cache-dir -r requirements-dev.txt
 
+# The code comes after the dependencies in each stage, so changing it
+# doesn't reinstall them
+COPY alembic.ini .
+COPY alembic ./alembic
+COPY app ./app
 COPY pytest.ini .
 COPY tests ./tests
+# The quality check's question sets and the demo documents they ask about
+COPY quality ./quality
+COPY docs/demo ./docs/demo
 
 CMD ["pytest"]
 
 # --- production: what the api service runs (no test tools or tests) ---
 FROM base AS production
 
+COPY alembic.ini .
+COPY alembic ./alembic
+COPY app ./app
 # start.sh, and check_storage.py for the manual storage check
 COPY scripts ./scripts
 

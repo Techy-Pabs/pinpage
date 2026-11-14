@@ -20,8 +20,6 @@ from app.schemas.conversation import (
 from app.services import answering, modes
 from app.services import conversations as convs
 from app.services.ai import AIClient, AIServiceError
-from app.services.followups import needs_rewrite, rewrite_follow_up
-from app.services.requests import MODE_PAGE, MODE_QUESTION, MODE_SECTION, parse_request
 
 logger = logging.getLogger(__name__)
 
@@ -167,41 +165,15 @@ def ask_question(
     if document.status != STATUS_READY:
         raise document_not_ready()
     history = answering.recent_history(db, conversation.id)
-    sections = modes.section_infos(db, current_user.id, document.id)
     follow_up = answering.has_answered_question(db, conversation.id)
     db.commit()  # no transaction stays open while the AI works
 
-    # 2. What the question asks for: no AI request
-    request = parse_request(question, document.page_count or 0, sections)
-
-    # A follow up ("and for part time staff?") is rewritten into a standalone
-    # question, for retrieval only. Any failure keeps the original; never a 503.
-    retrieval_query = None
-    if request.mode == MODE_QUESTION and settings.rewrite_follow_ups and needs_rewrite(question, follow_up):
-        rewritten = rewrite_follow_up(ai, history, question)
-        if rewritten and rewritten != question:
-            retrieval_query = rewritten
-            # "and section 5?" after a summary: the rewrite may name a page or section
-            reparsed = parse_request(rewritten, document.page_count or 0, sections)
-            if reparsed.mode != MODE_QUESTION:
-                request = reparsed
-
+    # 2 to 7. What the question asks for, then the answer in that mode
     try:
-        if request.mode == MODE_PAGE:
-            answer = modes.answer_pages(db, ai, current_user.id, document, request, history, question)
-        elif request.mode == MODE_SECTION:
-            answer = modes.answer_section(db, ai, current_user.id, document, request, sections, history, question)
-        else:
-            # 3 to 7. Embed, retrieve from this document only, answer with citations.
-            # Retrieval uses the rewrite if there is one; the answer prompt gets the
-            # user's own question.
-            answer = modes.answer_question(
-                db, ai, current_user.id, document, history, question, retrieval_query or question
-            )
+        answer = modes.answer_message(db, ai, current_user.id, document, history, question, follow_up)
     except AIServiceError:
         db.rollback()
         raise ai_unavailable() from None
-    answer.retrieval_query = retrieval_query  # kept on the answer, for seeing why it was found or missed
 
     # 8. The question and answer together, in one transaction
     answering.lock_user(db, current_user.id)

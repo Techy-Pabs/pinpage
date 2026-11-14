@@ -24,7 +24,15 @@ from app.services.prompts import (
     build_page_prompt,
     build_summary_prompt,
 )
-from app.services.requests import MODE_PAGE, MODE_QUESTION, MODE_SECTION, ParsedRequest, SectionInfo
+from app.services.followups import needs_rewrite, rewrite_follow_up
+from app.services.requests import (
+    MODE_PAGE,
+    MODE_QUESTION,
+    MODE_SECTION,
+    ParsedRequest,
+    SectionInfo,
+    parse_request,
+)
 from app.services.processing import MIN_CHARS_PER_PAGE
 from app.services.retrieval import RetrievedChunk, similar_chunks
 from app.services.sections import KIND_BODY
@@ -39,6 +47,9 @@ class Answer:
     mode: str
     citations: list[dict] = field(default_factory=list)
     retrieval_query: str | None = None
+    # The excerpts retrieval kept (ordinary questions only); never saved,
+    # but the quality check scores them
+    retrieved: list[RetrievedChunk] = field(default_factory=list)
 
 
 def cited_or_not_found(reply: str, excerpts: list[RetrievedChunk], mode: str) -> Answer:
@@ -345,4 +356,50 @@ def answer_question(
         ai, build_grounding_prompt(document.title, chunks), [*history, {"role": "user", "content": question}],
         settings.ai_max_tokens_question, len(chunks), "Question",
     )
-    return cited_or_not_found(reply, chunks, MODE_QUESTION)
+    answer = cited_or_not_found(reply, chunks, MODE_QUESTION)
+    answer.retrieved = chunks
+    return answer
+
+
+# --- Any question ---------------------------------------------------------------------------------
+
+def answer_message(
+    db: Session, ai: AIClient, user_id: uuid.UUID, document: Document, history: list[ChatMessage],
+    question: str, follow_up: bool,
+) -> Answer:
+    """The answer to one question about a ready document, in whichever mode
+    it asks for. follow_up: the conversation already has an answered
+    question. Raises AIServiceError if the AI can't answer.
+
+    Used by the ask route and by the quality check, which calls it directly
+    so that quality runs never count toward a user's daily limit. Nothing is
+    saved here."""
+    sections = section_infos(db, user_id, document.id)
+    db.commit()  # no transaction stays open while the AI works
+
+    # What the question asks for: no AI request
+    request = parse_request(question, document.page_count or 0, sections)
+
+    # A follow up ("and for part time staff?") is rewritten into a standalone
+    # question, for retrieval only. Any failure keeps the original; never a 503.
+    retrieval_query = None
+    if request.mode == MODE_QUESTION and settings.rewrite_follow_ups and needs_rewrite(question, follow_up):
+        rewritten = rewrite_follow_up(ai, history, question)
+        if rewritten and rewritten != question:
+            retrieval_query = rewritten
+            # "and section 5?" after a summary: the rewrite may name a page or section
+            reparsed = parse_request(rewritten, document.page_count or 0, sections)
+            if reparsed.mode != MODE_QUESTION:
+                request = reparsed
+
+    if request.mode == MODE_PAGE:
+        answer = answer_pages(db, ai, user_id, document, request, history, question)
+    elif request.mode == MODE_SECTION:
+        answer = answer_section(db, ai, user_id, document, request, sections, history, question)
+    else:
+        # Embed, retrieve from this document only, answer with citations.
+        # Retrieval uses the rewrite if there is one; the answer prompt gets
+        # the user's own question.
+        answer = answer_question(db, ai, user_id, document, history, question, retrieval_query or question)
+    answer.retrieval_query = retrieval_query  # kept on the answer, for seeing why it was found or missed
+    return answer

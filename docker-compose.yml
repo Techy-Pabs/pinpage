@@ -11,6 +11,23 @@ services:
       db:
         condition: service_healthy
 
+  # The quality check, against the real AI and storage (never in CI):
+  #   docker compose run --rm quality run --set lantern-hill
+  # quality/ and docs/demo/ are mounted, so results land in quality/results/
+  quality:
+    build:
+      context: .
+      target: production
+    profiles: ["quality"]
+    env_file: .env
+    entrypoint: ["python", "-m", "app.cli.quality"]
+    volumes:
+      - ./quality:/code/quality
+      - ./docs/demo:/code/docs/demo:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
   # Runs the test suite: docker compose run --rm --build tests
   # The "test" profile keeps it from starting with a plain "docker compose up".
   tests:

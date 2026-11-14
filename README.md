@@ -141,6 +141,26 @@ docker compose run --rm --no-deps --build api python scripts/check_ai.py
 
 It uses exactly 2 real requests from your free daily allowance: it embeds one sentence (checking the embedding has `EMBEDDING_DIMENSIONS` numbers) and asks the chat model for a one word reply. It prints PASS or FAIL for each step and never prints the key. It is not part of the automated tests.
 
+## Quality check (manual, real AI)
+
+`quality/lantern-hill.yaml` holds questions about the demo handbook with known answers. The quality check asks them and scores each answer: whether retrieval found an expected section, whether the answer has the expected words (and none of the forbidden ones), whether it cites an expected section or page, its mode, and, for questions the handbook doesn't answer, the not found answer.
+
+It uses the real AI and real storage, so it never runs in CI or in the tests. It prints how many requests it will use and asks before starting (`--yes` skips the question):
+
+```sh
+docker compose run --rm --build quality run --set lantern-hill                     # every case
+docker compose run --rm quality run --set lantern-hill --only annual-new,car-loan  # some cases
+docker compose run --rm quality run --set lantern-hill --retrieval-only            # the cut off table: 1 request
+docker compose run --rm quality run --set lantern-hill --chat-model MODEL          # one chat model, no fallback
+docker compose run --rm quality models                                             # free chat models (not a chat request)
+```
+
+- The demo documents are uploaded once, to a dedicated quality user's workspace, and reused on later runs, so they are embedded only once.
+- All questions are embedded in one batched request. The answering code is then called directly, not over HTTP, so no user's daily question limit applies and nothing is saved as a conversation.
+- If OpenRouter's free daily allowance runs out (a 429 with a per day message), the run stops, keeps the cases it finished, and says so. Run the rest another day with `--only`.
+- `--retrieval-only` makes no chat requests. It stores the similarity of every chunk to each question and prints, for cut offs from 0.20 to 0.50, how many answerable questions keep an expected section and how many not found questions still have a chunk above the cut off.
+- Results, including the answers, are saved to `quality/results/<timestamp>-<set>.json`, which is not committed. Runs worth keeping get one line in `quality/RESULTS.md`.
+
 ## Rebuild a document's sections
 
 Documents processed before a change to section detection keep their old sections. To rebuild them from the stored pages, without re-embedding:

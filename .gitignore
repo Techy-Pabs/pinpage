@@ -4,6 +4,9 @@
 # Claude Code: personal settings stay local (the shared .claude/settings.json is tracked)
 .claude/settings.local.json
 
+# Quality check results: they hold answers, so they stay on this machine
+quality/results/
+
 # Python
 __pycache__/
 *.py[cod]

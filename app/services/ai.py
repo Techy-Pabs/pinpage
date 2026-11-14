@@ -65,6 +65,11 @@ class ChatReply:
 
     text: str
     finish_reason: str | None = "stop"
+    # Which model answered, and the tokens it used (reasoning is part of
+    # completion_tokens); None when the provider doesn't say
+    model: str | None = None
+    completion_tokens: int | None = None
+    reasoning_tokens: int | None = None
 
     @property
     def truncated(self) -> bool:
@@ -87,6 +92,26 @@ class AIServiceError(Exception):
     def __init__(self, message: str, retryable: bool = True):
         super().__init__(message)
         self.retryable = retryable
+
+
+class DailyLimitReached(AIServiceError):
+    """OpenRouter's free daily allowance is used up (HTTP 429 with a per day
+    message). Nothing helps until tomorrow, so it is never retried."""
+
+    def __init__(self):
+        super().__init__("daily limit reached", retryable=False)
+
+
+# OpenRouter's daily limit message, e.g. "Rate limit exceeded: free-models-per-day"
+_PER_DAY = re.compile(r"per[-_ ]?day", re.IGNORECASE)
+
+
+def _is_daily_limit(error: "openai.APIStatusError") -> bool:
+    """Read only to tell the daily limit from the per minute one; the text
+    itself is never logged."""
+    if error.status_code != 429:
+        return False
+    return bool(_PER_DAY.search(f"{error.message} {error.body}"))
 
 
 class RequestPacer:
@@ -213,6 +238,9 @@ class OpenRouterAI(AIClient):
         try:
             return send()
         except openai.APIStatusError as error:
+            if _is_daily_limit(error):
+                logger.warning("AI %s: provider returned HTTP 429 (daily limit)", operation)
+                raise DailyLimitReached() from None
             # Only the status code: the error body could echo the request
             logger.warning("AI %s: provider returned HTTP %s", operation, error.status_code)
             raise AIServiceError(f"provider returned HTTP {error.status_code}") from None
@@ -237,18 +265,25 @@ class OpenRouterAI(AIClient):
         choice = response.choices[0] if response.choices else None
         reply = (choice.message.content if choice else None) or ""
         finish_reason = getattr(choice, "finish_reason", None)
+        completion, reasoning = _token_counts(response)
         # Counts only, never the text
         logger.info(
-            "AI reply from model=%s: finish_reason=%s, %d characters, %s (max_tokens=%d)",
-            response.model, finish_reason, len(reply.strip()), _token_counts(response), max_tokens,
+            "AI reply from model=%s: finish_reason=%s, %d characters, completion_tokens=%s%s (max_tokens=%d)",
+            response.model, finish_reason, len(reply.strip()),
+            "unknown" if completion is None else completion,
+            "" if reasoning is None else f" (reasoning {reasoning})", max_tokens,
         )
+
+        def result(text: str) -> ChatReply:
+            return ChatReply(text, finish_reason, response.model, completion, reasoning)
+
         if finish_reason == FINISH_LENGTH:
             # Another attempt with the same limit would be cut off again;
             # the caller decides what part of the reply to keep
             logger.warning("AI reply was cut off at max_tokens=%d (model=%s)", max_tokens, response.model)
             if looks_like_classifier_label(reply):
                 raise AIServiceError("classifier label instead of a reply")
-            return ChatReply(reply.strip(), finish_reason)
+            return result(reply.strip())
         if not reply.strip():
             logger.warning("AI reply was empty (model=%s)", response.model)
             raise AIServiceError("empty reply")
@@ -256,7 +291,7 @@ class OpenRouterAI(AIClient):
             # Never show a classifier's verdict as if it were an answer
             logger.warning("AI reply was a safety classifier label (model=%s)", response.model)
             raise AIServiceError("classifier label instead of a reply")
-        return ChatReply(reply.strip(), finish_reason)
+        return result(reply.strip())
 
     def generate(self, system_prompt: str, history: list[ChatMessage], max_tokens: int | None = None) -> ChatReply:
         """The first attempt asks the primary model alone, so if it fails we
@@ -308,14 +343,12 @@ class OpenRouterAI(AIClient):
         return vectors
 
 
-def _token_counts(response) -> str:
-    """"completion_tokens=900 (reasoning 850)" from the response's usage, if any."""
+def _token_counts(response) -> tuple[int | None, int | None]:
+    """(completion_tokens, reasoning_tokens) from the response's usage, if any."""
     usage = getattr(response, "usage", None)
     completion = getattr(usage, "completion_tokens", None)
-    if completion is None:
-        return "completion_tokens=unknown"
     reasoning = getattr(getattr(usage, "completion_tokens_details", None), "reasoning_tokens", None)
-    return f"completion_tokens={completion}" + (f" (reasoning {reasoning})" if reasoning is not None else "")
+    return (completion if isinstance(completion, int) else None, reasoning if isinstance(reasoning, int) else None)
 
 
 class FakeAI(AIClient):

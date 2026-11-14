@@ -1,0 +1,153 @@
+# The quality check's questions for the Lantern Hill handbook (Milestone 4
+# spec, section 1). Run with:
+#   docker compose run --rm quality run --set lantern-hill
+#
+# expect_any: a list of groups; every group needs at least one of its words
+#   in the answer (case insensitive, whole words or numbers: "10" doesn't
+#   match "100", "25" matches "25th").
+# expect_none: words that must not appear.
+# expect_sections: at least one citation must point to one of these
+#   sections or their subsections ("12" accepts 12.1, 12.2, ...).
+# expect_pages: at least one citation must cover one of these pages.
+# expect_mode: question, page or section.
+# not_found cases pass with the not found answer and no citation.
+
+name: lantern-hill
+
+documents:
+  lantern-hill:
+    file: docs/demo/lantern-hill-staff-handbook.pdf
+    title: Lantern Hill College Staff Handbook
+
+cases:
+  - id: annual-new
+    kind: answer
+    question: How many annual leave days do new full time staff get?
+    expect_any: [["20"]]
+    expect_sections: ["4.1"]
+
+  - id: annual-ten
+    kind: answer
+    question: How much annual leave after ten years of service?
+    expect_any: [["26"]]
+    expect_sections: ["4.1"]
+
+  - id: carry-over
+    kind: answer
+    question: Can I carry unused leave into next year?
+    expect_any: [["five", "5"], ["31 December"]]
+    expect_sections: ["4.3"]
+
+  - id: doctor-note
+    kind: answer
+    question: When do I need a doctor's note for sick leave?
+    expect_any: [["three", "3"]]
+    expect_sections: ["4.4"]
+
+  - id: sick-half
+    kind: answer
+    question: What happens to sick pay after ten days?
+    expect_any: [["half"]]
+    expect_sections: ["4.4"]
+
+  - id: maternity
+    kind: answer
+    question: How long is maternity leave?
+    expect_any: [["16"]]
+    expect_sections: ["4.5"]
+
+  - id: paternity
+    kind: answer
+    question: How long is paternity leave?
+    expect_any: [["10"]]
+    expect_sections: ["4.6"]
+
+  - id: probation
+    kind: answer
+    question: How long is probation?
+    expect_any: [["six", "6"]]
+    expect_sections: ["5.4"]
+
+  - id: salary-date
+    kind: answer
+    question: When are salaries paid?
+    expect_any: [["25"]]
+    expect_sections: ["3.1"]
+
+  - id: transport
+    kind: answer
+    question: How much is the transport allowance?
+    expect_any: [["40,000", "40000"]]
+    expect_sections: ["3.3"]
+
+  - id: pension
+    kind: answer
+    question: How much does the College contribute to my pension?
+    expect_any: [["10 percent", "10%"]]
+    expect_sections: ["3.4"]
+
+  - id: marking
+    kind: answer
+    question: How quickly must coursework be marked?
+    expect_any: [["15"]]
+    expect_sections: ["6.2"]
+
+  - id: notice
+    kind: answer
+    question: What is the notice period for lecturers after probation?
+    expect_any: [["two months", "2 months"]]
+    expect_sections: ["12.1"]
+
+  - id: gifts
+    kind: answer
+    question: Can I accept gifts from students?
+    expect_any: [["10,000", "10000"]]
+    expect_sections: ["9.3"]
+
+  - id: breach
+    kind: answer
+    question: How soon must I report a data breach?
+    expect_any: [["24"]]
+    expect_sections: ["11.3"]
+
+  - id: flexible
+    kind: answer
+    question: How long does a manager have to decide a flexible working request?
+    expect_any: [["28"]]
+    expect_sections: ["2.2"]
+
+  - id: car-loan
+    kind: not_found
+    question: Does the College offer a staff car loan?
+
+  - id: gym
+    kind: not_found
+    question: Is there a free staff gym membership?
+
+  - id: partial
+    kind: partial
+    question: How many paternity days do I get, and does the College provide childcare vouchers?
+    expect_any: [["10"], ["not", "doesn't", "does not"]]
+    expect_sections: ["4.6"]
+
+  - id: page-8
+    kind: page
+    question: What does page 8 say?
+    expect_any: [["25"]]
+    expect_pages: [8]
+    expect_mode: page
+
+  - id: section-12
+    kind: section
+    question: Summarise section 12
+    expect_any: [["notice"], ["final pay"]]
+    expect_sections: ["12"]
+    expect_mode: section
+
+  - id: follow-up
+    kind: follow_up
+    turns:
+      - How long is maternity leave?
+      - And paternity?
+    expect_any: [["10"]]
+    expect_sections: ["4.6"]
