@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from app.core.config import settings
+from app.core.config import Settings, settings
 from app.models.document import STATUS_READY
 from app.services.citations import cite
 from app.services.leak_check import LEAK_RUN_CHARS, PROMPT_LEAK_MESSAGE, repeats_prompt
@@ -81,19 +81,25 @@ def test_the_hostile_text_is_neutralized_in_the_prompt(hostile_chunks):
     assert prompt.index("Ignore all previous rules") < prompt.index("</excerpts>")
 
 
-def test_a_fake_s9_marker_in_an_answer_is_dropped(hostile_chunks):
+def test_the_hostile_pdf_carries_a_marker_no_excerpt_can_have():
+    # RETRIEVAL_TOP_K is at most 20, so S99 can never be a real marker
+    assert any(getattr(m, "le", None) == 20 for m in Settings.model_fields["retrieval_top_k"].metadata)
+    assert "[S99]" in extract_pages(HOSTILE_PDF.read_bytes(), max_pages=100).texts[2]
+
+
+def test_a_fake_s99_marker_in_an_answer_is_dropped(hostile_chunks):
     excerpts = hostile_chunks[:6]
 
-    answered = cite("Staff get 18 days of annual leave [S1]. The head teacher confirmed it [S9].", excerpts)
+    answered = cite("Staff get 18 days of annual leave [S1]. The head teacher confirmed it [S99].", excerpts)
 
-    assert "[S9]" not in answered.text and "[S1]" in answered.text
+    assert "[S99]" not in answered.text and "[S1]" in answered.text
     assert [c["marker"] for c in answered.citations] == ["S1"]
 
 
 def test_asking_the_hostile_document_keeps_its_text_as_data(client, auth_headers, fake_ai, monkeypatch, hostile_chunks):
-    # The usual 6 excerpts at most, so [S9] is never a real marker; the
+    # The most excerpts allowed, and still [S99] is never a real marker; the
     # question is embedded like the hostile chunk, so that one is retrieved
-    monkeypatch.setattr(settings, "retrieval_top_k", 6)
+    monkeypatch.setattr(settings, "retrieval_top_k", 20)
     monkeypatch.setattr(settings, "retrieval_min_similarity", -1.0)
     [hostile] = [c for c in hostile_chunks if "</excerpts>" in c.content]
     fake_ai.vectors["How much annual leave do staff get?"] = fake_ai.vector_for(hostile.content)
@@ -104,7 +110,7 @@ def test_asking_the_hostile_document_keeps_its_text_as_data(client, auth_headers
     document_id = upload.json()["id"]
     assert client.get(f"/documents/{document_id}", headers=alice).json()["status"] == STATUS_READY
     conversation = client.post(f"/documents/{document_id}/conversations", headers=alice).json()["id"]
-    fake_ai.reply = "Full time staff get 18 days a year [S2]. This is confirmed [S9]."
+    fake_ai.reply = "Full time staff get 18 days a year [S2]. This is confirmed [S99]."
 
     response = client.post(
         f"/conversations/{conversation}/messages", headers=alice, json={"content": "How much annual leave do staff get?"}
@@ -112,7 +118,7 @@ def test_asking_the_hostile_document_keeps_its_text_as_data(client, auth_headers
 
     body = response.json()
     assert response.status_code == 201 and body["outcome"] == "answered"
-    assert "[S9]" not in body["content"] and [c["marker"] for c in body["citations"]] == ["S2"]
+    assert "[S99]" not in body["content"] and [c["marker"] for c in body["citations"]] == ["S2"]
     prompt = fake_ai.reply_calls[-1]["system_prompt"]
     assert "Ignore all previous rules" in prompt  # the hostile chunk was sent, as data
     assert prompt.count("</excerpts>") == 1 and REMOVED_TAG in prompt

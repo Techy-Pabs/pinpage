@@ -359,7 +359,9 @@ def run_quality(project, fake_ai, fake_storage, session_factory, monkeypatch):
             args(**changes), ai=fake_ai, storage=fake_storage, session_factory=session_factory, root=project,
             ask=lambda prompt: replies.pop(0), out=printed.append,
         )
-        saved = sorted((project / "quality" / "results").glob("*.json")) if (project / "quality" / "results").exists() else []
+        saved = sorted(
+            path for path in (project / "quality" / "results").glob("*.json") if path.name != runner.EMBEDDING_CACHE
+        )
         return code, printed, json.loads(saved[-1].read_text()) if saved else None
 
     return _run
@@ -409,11 +411,12 @@ def test_a_run_uploads_once_answers_directly_and_saves_scored_results(db, run_qu
     assert db.scalar(select(func.count()).select_from(QuestionUsage)) == 0
     assert db.scalar(select(User.email)) == runner.QUALITY_EMAIL
 
-    # A second run reuses the processed document: no document embeddings
+    # A second run reuses the processed document and the cached question
+    # embedding: no embedding request at all
     fake_ai.embed_calls.clear()
     code, printed, _ = run_quality(only="annual-new")
-    assert printed[1].startswith("This run uses about 2 real AI requests (1 to embed the questions")
-    assert [c["mode"] for c in fake_ai.embed_calls] == ["query"]
+    assert printed[1] == "This run uses about 1 real AI request (0 to embed the questions (all cached), 1 for answers)."
+    assert fake_ai.embed_calls == []
     assert db.scalar(select(func.count()).select_from(Document)) == 1
 
 
@@ -490,3 +493,74 @@ def test_recording_ai_keeps_counts_never_text(fake_ai):
     [record] = recording.replies
     assert record["model"] == "m" and record["completion_tokens"] == 10 and record["reasoning_tokens"] == 4
     assert "secret answer" not in json.dumps(record)
+
+
+# --- The question embedding cache ------------------------------------------------------------------
+
+def cache_file(project) -> Path:
+    return project / "quality" / "results" / runner.EMBEDDING_CACHE
+
+
+def query_batches(fake_ai) -> list[list[str]]:
+    return [c["texts"] for c in fake_ai.embed_calls if c["mode"] == "query"]
+
+
+def test_question_embeddings_are_cached_per_model_and_reused_by_later_runs(project, run_quality, fake_ai):
+    annual = "How many annual leave days do new full time staff get?"
+    carry = "Can I carry unused leave into next year?"
+
+    run_quality(only="annual-new", retrieval_only=True)
+
+    cache = json.loads(cache_file(project).read_text())
+    assert list(cache) == [settings.ai_embedding_model]
+    assert cache[settings.ai_embedding_model][annual] == fake_ai.vector_for(annual)
+
+    # Later runs (for example one per --chat-model) count and spend only
+    # the questions not cached yet
+    fake_ai.embed_calls.clear()
+    code, printed, results = run_quality(only="annual-new,carry-over")
+    assert code == runner.OK
+    assert printed[1] == "This run uses about 3 real AI requests (1 to embed the questions (1 of 2 cached), 2 for answers)."
+    assert query_batches(fake_ai) == [[carry]]
+    assert results["requests"]["embedding"] == 1
+
+    fake_ai.embed_calls.clear()
+    _, printed, results = run_quality(only="annual-new,carry-over", retrieval_only=True)
+    assert printed[1] == "This run uses about 0 real AI requests (0 to embed the questions (all cached))."
+    assert fake_ai.embed_calls == [] and results["requests"]["embedding"] == 0
+    assert results["similarities"]["carry-over"]  # scored from the cached vector
+
+    # Another embedding model gets its own entries, and the first model's stay
+    fake_ai.embedding_model = "other/embedder"
+    run_quality(only="annual-new", retrieval_only=True)
+    assert query_batches(fake_ai) == [[annual]]
+    cache = json.loads(cache_file(project).read_text())
+    assert set(cache) == {settings.ai_embedding_model, "other/embedder"}
+    assert set(cache[settings.ai_embedding_model]) == {annual, carry}
+
+
+def test_follow_up_rewrites_are_cached_too(project, run_quality, fake_ai):
+    fake_ai.replies = ["Maternity leave is 16 weeks [S1].", "How long is paternity leave?", "10 days [S1]."]
+
+    run_quality(only="follow-up")
+
+    cached = json.loads(cache_file(project).read_text())[settings.ai_embedding_model]
+    assert set(cached) == {"How long is maternity leave?", "How long is paternity leave?"}
+
+
+@pytest.mark.parametrize("content", ["not json", "[]", json.dumps({"m": "not a dict"})])
+def test_an_unreadable_cache_is_treated_as_empty(tmp_path, content):
+    path = tmp_path / "cache.json"
+    path.write_text(content)
+
+    assert runner.load_embedding_cache(path, "m", 4) == {}
+    runner.save_embedding_cache(path, "m", {"Q?": [1.0, 0, 0, 0]})
+    assert runner.load_embedding_cache(path, "m", 4) == {"Q?": [1.0, 0, 0, 0]}
+
+
+def test_cached_vectors_of_the_wrong_size_are_not_used(tmp_path):
+    path = tmp_path / "cache.json"
+    path.write_text(json.dumps({"m": {"old": [1.0, 2.0], "good": [1.0, 0, 0, 0]}}))
+
+    assert runner.load_embedding_cache(path, "m", 4) == {"good": [1.0, 0, 0, 0]}
+    assert runner.load_embedding_cache(tmp_path / "missing.json", "m", 4) == {}

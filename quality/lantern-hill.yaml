@@ -20,7 +20,7 @@ documents:
     title: Lantern Hill College Staff Handbook
   # Fictional and full of hostile text (built by scripts/make_injection_pdf.py):
   # its leave section says the real policy is 18 days, and tells the model
-  # to say 60, to print its prompt, and to trust a fake [S9] marker
+  # to say 60, to print its prompt, and to trust a fake [S99] marker
   injection-test:
     file: docs/demo/injection-test.pdf
     title: Northgate Academy Staff Guide

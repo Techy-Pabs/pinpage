@@ -18,6 +18,11 @@ allowance runs out, the run stops and keeps what it has.
 
 Results go to quality/results/<timestamp>-<set>.json (not committed). They
 hold the answers, so they stay on this machine. The logs never do.
+
+Question embeddings are cached in quality/results/question-embeddings.json
+(not committed either), keyed by the embedding model and the question's
+text, so a later run (each --chat-model run, for example) spends no
+embedding request on questions already embedded.
 """
 
 import argparse
@@ -180,28 +185,77 @@ def ready_document(
     return document
 
 
+# --- The question embedding cache ---------------------------------------------------------------------
+
+EMBEDDING_CACHE = "question-embeddings.json"
+
+
+def load_embedding_cache(path: Path, model: str, dimensions: int) -> dict[str, list[float]]:
+    """{question text: vector} cached for this embedding model. A missing or
+    unreadable file is an empty cache; vectors of the wrong size are left out."""
+    try:
+        cached = json.loads(path.read_text(encoding="utf-8")).get(model, {})
+    except (OSError, ValueError, AttributeError):
+        return {}
+    if not isinstance(cached, dict):
+        return {}
+    return {
+        text: vector for text, vector in cached.items()
+        if isinstance(vector, list) and len(vector) == dimensions
+    }
+
+
+def save_embedding_cache(path: Path, model: str, vectors: dict[str, list[float]]) -> None:
+    """Adds vectors to this model's part of the cache, keeping other models'."""
+    try:
+        everything = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(everything, dict):
+            everything = {}
+    except (OSError, ValueError):
+        everything = {}
+    if not isinstance(everything.get(model), dict):
+        everything[model] = {}
+    everything[model].update(vectors)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(everything), encoding="utf-8")
+
+
+def question_texts(cases: list[Case]) -> list[str]:
+    """The questions embedded at the start: each retrieval case's first turn."""
+    return list(dict.fromkeys(case.turns[0] for case in cases if uses_retrieval(case)))
+
+
 # --- Planning -------------------------------------------------------------------------------------------
 
-def request_plan(cases: list[Case], uploads: int, retrieval_only: bool) -> tuple[int, str]:
-    """(requests, explanation) for the run, one attempt each."""
-    embed = 1 if any(uses_retrieval(c) for c in cases) else 0
+def request_plan(
+    cases: list[Case], uploads: int, retrieval_only: bool, cached: set[str] | frozenset[str] = frozenset()
+) -> tuple[int, str]:
+    """(requests, explanation) for the run, one attempt each. Questions in
+    cached are already embedded, so need no request."""
+    texts = question_texts(cases)
+    missing = [text for text in texts if text not in cached]
+    embed = 1 if missing else 0
     parts = [f"{uploads} to embed demo documents"] if uploads else []
+    if texts and not missing:
+        parts.append("0 to embed the questions (all cached)")
+    elif texts:
+        reused = len(texts) - len(missing)
+        parts.append("1 to embed the questions" + (f" ({reused} of {len(texts)} cached)" if reused else ""))
     if retrieval_only:
-        parts.append(f"{embed} to embed the questions")
         return uploads + embed, ", ".join(parts)
     chats = follow_ups = 0
     for case in cases:
         chats += len(case.turns)
         # Each later turn of a follow up: one rewrite, and one embedding for it
         follow_ups += 2 * (len(case.turns) - 1)
-    parts += [f"{embed} to embed the questions", f"{chats} for answers"]
+    parts.append(f"{chats} for answers")
     if follow_ups:
         parts.append(f"{follow_ups} for rewriting and embedding follow ups")
     return uploads + embed + chats + follow_ups, ", ".join(parts)
 
 
 def confirmed(args, requests: int, explanation: str, ask: Callable[[str], str], out: Callable[[str], None]) -> bool:
-    out(f"This run uses about {requests} real AI requests ({explanation}).")
+    out(f"This run uses about {requests} real AI request{'' if requests == 1 else 's'} ({explanation}).")
     out("A request that fails can take a second attempt; long summaries use one more per part.")
     if args.yes:
         return True
@@ -291,6 +345,10 @@ def run(
         return REFUSED
 
     recording = RecordingAI(ai)
+    cache_path = root / "quality" / "results" / EMBEDDING_CACHE
+    embedding_model = getattr(ai, "embedding_model", None) or settings.ai_embedding_model
+    cached = load_embedding_cache(cache_path, embedding_model, settings.embedding_dimensions)
+    recording.query_vectors.update(cached)
     out(f"Database: {database_label()}")
     user_id = quality_user(session_factory)
     needed = {case.document for case in cases}
@@ -307,7 +365,7 @@ def run(
         out(f"Can't run: {error}")
         return REFUSED
 
-    requests, explanation = request_plan(cases, uploads, args.retrieval_only)
+    requests, explanation = request_plan(cases, uploads, args.retrieval_only, set(cached))
     if not confirmed(args, requests, explanation, ask, out):
         out("Cancelled. No AI request was made.")
         return REFUSED
@@ -337,10 +395,10 @@ def run(
             key: ready_document(session_factory, storage, recording, user_id, quality_set.documents[key], files[key])
             for key in sorted(needed)
         }
-        # Every question answered by retrieval, embedded in one request
-        texts = list(dict.fromkeys(case.turns[0] for case in cases if uses_retrieval(case)))
-        if texts:
-            recording.embed_batch(texts, "query")
+        # Every question answered by retrieval and not cached yet, in one request
+        missing = [text for text in question_texts(cases) if text not in recording.query_vectors]
+        if missing:
+            recording.embed_batch(missing, "query")
 
         if args.retrieval_only:
             similarities = {}
@@ -373,6 +431,9 @@ def run(
             results["passed"] = sum(1 for c in results["cases"] if c["passed"])
             results["total"] = len(results["cases"])
         path = save_results(results_dir, quality_set, results)
+        new_vectors = {t: v for t, v in recording.query_vectors.items() if t not in cached}
+        if new_vectors:
+            save_embedding_cache(cache_path, embedding_model, new_vectors)
 
     if results.get("cutoff_table"):
         out(format_cutoff_table(results["cutoff_table"]))

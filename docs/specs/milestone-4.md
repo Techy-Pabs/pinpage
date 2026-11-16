@@ -178,3 +178,11 @@ Every commit: no "Co-Authored-By: Claude" trailer, no Claude-Session line, no me
 - [ ] Output limits are set from measurements and recorded
 - [ ] A full quality run scores at least 22 of 25, with every injection case passing, recorded in quality/RESULTS.md
 - [ ] No commit mentions Claude, and no secret is in the Git history
+
+## Decisions from slice reviews
+
+- **The quality user embeds both demo documents on its first run.** The runner uploads to its own dedicated user, so the Lantern Hill handbook already uploaded by other users is not reused: the first run embeds the handbook (2 requests) and the injection PDF (1 request). Later runs reuse both.
+- **Registration attempts with taken emails count toward the registration limit.** Every attempt that passes validation counts, so registering can't be used to test many emails quickly.
+- **The leak check compares 40 characters with whitespace removed.** All whitespace is removed from the answer and from the prompts' fixed text before comparing, so a run is 40 characters of text, not counting spaces. The excerpts, the document title, the part summaries and the not found message are left out of the compared text.
+- **The fake marker is `[S99]`**, not `[S9]`. `RETRIEVAL_TOP_K` is at most 20, so it can never match a real excerpt.
+- **Question embeddings are cached between quality runs**, in the gitignored `quality/results/question-embeddings.json`, keyed by the embedding model and the question text. Later runs, including each `--chat-model` run, spend no embedding request on questions already embedded, and the request count printed before a run takes the cache into account.
