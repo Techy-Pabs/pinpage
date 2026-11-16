@@ -40,6 +40,14 @@ def daily_limit_reached() -> ApiError:
     )
 
 
+def embedded_with_fake_ai() -> ApiError:
+    return ApiError(
+        status.HTTP_409_CONFLICT,
+        "embedded_with_fake_ai",
+        "This document was prepared with the local test AI. Retry it to prepare it for real answers.",
+    )
+
+
 def ai_unavailable() -> ApiError:
     return ApiError(
         status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -155,7 +163,9 @@ def ask_question(
     Answers 201 with the answer; the question and answer are saved together,
     and count as one question however many AI requests the answer used.
     429 daily_limit_reached after DAILY_QUESTIONS_PER_USER questions in a
-    day (UTC); 503 ai_unavailable, with nothing saved, if the AI can't answer."""
+    day (UTC); 503 ai_unavailable, with nothing saved, if the AI can't answer.
+    409 embedded_with_fake_ai if the document was embedded by the local fake
+    AI and the real one is in use: retry the document first."""
     question = body.content
 
     # 1. The daily limit
@@ -164,6 +174,9 @@ def ask_question(
     document = db.get(Document, conversation.document_id)  # reachable: checked by visible_conversation
     if document.status != STATUS_READY:
         raise document_not_ready()
+    if document.embedded_with_fake_ai and not ai.is_fake:
+        # Fake vectors mean nothing to the real model: no AI request, nothing counted
+        raise embedded_with_fake_ai()
     history = answering.recent_history(db, conversation.id)
     follow_up = answering.has_answered_question(db, conversation.id)
     db.commit()  # no transaction stays open while the AI works

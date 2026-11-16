@@ -38,6 +38,19 @@ Migrations run automatically before the API starts. Open http://localhost:8001/d
 
 The app refuses to start if `DATABASE_URL`, `JWT_SECRET` or any `R2_` value is missing or empty. Without `OPENROUTER_API_KEY` it starts, but documents fail with `ai_unavailable` until the key is set (then retry them). It doesn't contact R2 or OpenRouter at startup; connections are made on first use.
 
+### Without spending AI requests (fake AI)
+
+For clicking through the app, set these in `.env`:
+
+```sh
+APP_ENV=development
+AI_PROVIDER=fake
+```
+
+Embeddings and answers are then fake and make no AI request: every answer cites the first excerpt, so citations still work, and follow up questions aren't rewritten. Uploads still use your real R2 bucket. The app refuses to start with `AI_PROVIDER=fake` unless `APP_ENV=development`, and `APP_ENV` defaults to `production`, so a deployment can't switch it on by accident.
+
+A document embedded by the fake AI is marked (`embedded_with_fake_ai` on the document's row), because fake vectors mean nothing to the real model. Once you switch back to `AI_PROVIDER=openrouter`, asking about it gives 409 `embedded_with_fake_ai`; `POST /documents/{id}/retry` embeds all its chunks again with the real AI and clears the mark.
+
 The API listens on port **8001** and the database on **5433** on your machine, so Pinpage can run next to ShopAssist (which uses 8000 and 5432). Inside Docker they use the usual ports.
 
 ## Endpoints
@@ -54,14 +67,15 @@ Every document endpoint needs a login (`Authorization: Bearer <token>`). Swagger
 | GET /documents/{id} | One document and its status | 200 | 404 `document_not_found` |
 | GET /documents/{id}/pages/{page_number} | The text of one page (pages start at 1) | 200 | 404 `document_not_found` or `page_not_found`, 409 `document_not_ready` |
 | GET /documents/{id}/sections | The detected sections in order, with their pages and `kind` (`body` or `front_matter`) | 200 | 404, 409 `document_not_ready` |
-| POST /documents/{id}/retry | Restarts processing after `interrupted` or `ai_unavailable`, from the first unfinished stage | 202, status `processing` | 404, 409 `retry_not_allowed`, 403 `document_limit_reached` |
+| POST /documents/{id}/retry | Restarts processing after `interrupted` or `ai_unavailable`, from the first unfinished stage. Also redoes all the embeddings of a ready document embedded by the local fake AI, once the real AI is in use | 202, status `processing` | 404, 409 `retry_not_allowed`, 403 `document_limit_reached` |
 | GET /documents/{id}/file | A signed link to the original PDF, with `expires_in` | 200 | 404, 409 `document_not_ready`, 502 |
 | POST /documents/{id}/conversations | Starts a conversation with a ready document | 201 | 404, 409 `document_not_ready` |
 | GET /documents/{id}/conversations | Your conversations with this document, newest first | 200 | 404 |
 | GET /conversations/{id} | One conversation with its messages, oldest first | 200 | 404 `conversation_not_found` |
-| POST /conversations/{id}/messages | Asks a question (`{"content": "..."}`, up to 2,000 characters) and returns the answer with its citations | 201 | 404, 422, 429 `daily_limit_reached`, 503 `ai_unavailable` (nothing saved) |
+| POST /conversations/{id}/messages | Asks a question (`{"content": "..."}`, up to 2,000 characters) and returns the answer with its citations | 201 | 404, 409 `embedded_with_fake_ai` (retry the document first), 422, 429 `daily_limit_reached`, 503 `ai_unavailable` (nothing saved) |
 | DELETE /conversations/{id} | Deletes a conversation and its messages | 204 | 404 |
 | DELETE /documents/{id} | Deletes the file, the document and its pages, in any status | 204 | 404, 502 `storage_error` (the document is kept, so you can retry) |
+| GET /usage | Your questions today: `questions_used_today`, `questions_per_day` and `resets_at` (the next midnight UTC) | 200 | 401 |
 | GET /health | Health check | 200 | |
 
 Every error uses one shape: `{"error": {"code": "...", "message": "..."}}`. A `duplicate_document` error also carries `existing_document` with that document's `id` and `status`.
@@ -97,6 +111,9 @@ All set in `.env`, so they change without code changes:
 | `PROCESSING_TIMEOUT_MINUTES` | 15 | When a document still processing counts as interrupted |
 | `PDF_PARSE_TIME_LIMIT_SECONDS` | 60 | Longest time reading one PDF may take, in a separate process; then it fails with `too_complex` |
 | `JWT_EXPIRE_MINUTES` | 30 | How long a login lasts |
+| `ALLOWED_ORIGINS` | `http://localhost:5173` | Browser origins allowed to call the API (CORS), comma separated: exact origins, no wildcard or path |
+| `APP_ENV` | production | `development` only on your own machine |
+| `AI_PROVIDER` | openrouter | `fake` for local development without AI requests; only with `APP_ENV=development` |
 | `LOGIN_ATTEMPTS_PER_15_MIN` | 10 | Failed logins per email and per IP address in any 15 minutes; then 429 `too_many_attempts` with `Retry-After`. A successful login doesn't count |
 | `REGISTRATIONS_PER_HOUR` | 5 | Registration attempts per IP address in an hour (taken emails count too); then 429 `too_many_attempts` |
 | `TRUST_PROXY_HEADERS` | false | Set to true only behind a proxy that sets `X-Forwarded-For`: the client's IP address is then the last address in it. Otherwise the header is ignored |
@@ -197,6 +214,8 @@ The change takes effect on the user's next request; no new login is needed.
 - Passwords are hashed with Argon2 and never returned or echoed in error messages.
 - Every login or token failure gets the same 401, and an unknown email costs as much time as a wrong password, so the API doesn't reveal which emails have accounts.
 - Failed logins are limited per email and per IP address, and registrations per IP address. The 429 is the same whether or not the email has an account. The counts are kept in memory, which is right for the single worker the app runs; before running several workers or instances they must move to a shared store such as Redis, or each one would allow the full limit.
+- Only the origins in `ALLOWED_ORIGINS` may call the API from a browser (CORS). No wildcard is accepted, and credentials (cookies) are not allowed, since the token travels in the `Authorization` header.
+- The fake AI can't be switched on outside `APP_ENV=development`, and documents it embedded are never answered by the real AI until they are retried.
 - Admin rights are read from the database on every request, not from the token.
 - All ids are UUIDs, so they cannot be guessed by counting.
 - Every documents query joins on workspace membership, so a document you can't reach is never even loaded. Someone else's document, a missing one and a malformed id all get the same 404.

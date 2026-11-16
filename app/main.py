@@ -4,13 +4,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.config import settings
 from app.core.errors import DEFAULT_CODES, ApiError, error_body
 from app.db.session import SessionLocal
-from app.routers import auth, conversations, documents
+from app.routers import auth, conversations, documents, usage
 from app.services.processing import mark_stuck_documents
 
 # Show INFO logs from our own modules
@@ -23,6 +24,9 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     # Runs once when the app starts, with the session factory kept on
     # app.state (see below), the same one background tasks get
+    if settings.ai_provider == "fake":
+        # Only possible with APP_ENV=development (checked by the settings)
+        logger.warning("AI_PROVIDER=fake: embeddings and answers are fake, for local development only")
     try:
         mark_stuck_documents(app.state.session_factory, settings.processing_timeout_minutes)
     except Exception as error:
@@ -41,6 +45,19 @@ app = FastAPI(
 # Makes database sessions for work outside a request: the startup check and
 # background tasks. Tests replace it with a factory for the test database.
 app.state.session_factory = SessionLocal
+
+# Only these browser origins may call the API (the frontend; ALLOWED_ORIGINS).
+# The login token travels in the Authorization header, never in a cookie, so
+# credentials are not allowed. Retry-After is exposed for the 429 answers.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.allowed_origin_list,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
+    expose_headers=["Retry-After"],
+    max_age=600,
+)
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -81,6 +98,7 @@ def unexpected_error_handler(request: Request, exc: Exception):
 app.include_router(auth.router)
 app.include_router(documents.router)
 app.include_router(conversations.router)
+app.include_router(usage.router)
 
 
 # Visiting the base URL opens the Swagger page. Hidden from the docs themselves.

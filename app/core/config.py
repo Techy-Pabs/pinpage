@@ -1,4 +1,6 @@
 import re
+from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -19,6 +21,12 @@ class Settings(BaseSettings):
     # Required: the app refuses to start without them
     database_url: str
     jwt_secret: str
+
+    # "development" only on your own machine; anything deployed is
+    # "production", the default, so nothing local only is on by accident
+    app_env: Literal["development", "production"] = "production"
+    # Browser origins allowed to call the API (comma separated, CORS)
+    allowed_origins: str = "http://localhost:5173"
 
     # How long a login token stays valid
     jwt_expire_minutes: int = 30
@@ -65,6 +73,10 @@ class Settings(BaseSettings):
     # The AI, through OpenRouter (settings and values as in ShopAssist).
     # The key is optional so the app and tests start without it; processing
     # then fails with ai_unavailable until it is set.
+    # "openrouter", or "fake" for local development: fixed embeddings, and
+    # answers that cite the first excerpt, with no AI request at all. Only
+    # allowed with APP_ENV=development; the app refuses to start otherwise
+    ai_provider: Literal["openrouter", "fake"] = "openrouter"
     openrouter_api_key: SecretStr | None = None
     ai_base_url: str = "https://openrouter.ai/api/v1"
     # A specific free chat model. Avoid openrouter/free: it can route chat to
@@ -175,6 +187,37 @@ class Settings(BaseSettings):
         if self.chunk_overlap >= self.chunk_size:
             raise ValueError("CHUNK_OVERLAP must be smaller than CHUNK_SIZE")
         return self
+
+    @model_validator(mode="after")
+    def fake_ai_only_in_development(self):
+        if self.ai_provider == "fake" and self.app_env != "development":
+            raise ValueError(
+                "AI_PROVIDER=fake is only allowed with APP_ENV=development; a deployed app must use "
+                "the real AI (AI_PROVIDER=openrouter)"
+            )
+        return self
+
+    @field_validator("allowed_origins")
+    @classmethod
+    def origins_are_exact(cls, value: str) -> str:
+        """Each origin is scheme://host[:port] and nothing more: no "*", no
+        path. A trailing slash is dropped, since browsers never send one."""
+        origins = [origin.strip().rstrip("/") for origin in value.split(",") if origin.strip()]
+        for origin in origins:
+            parts = urlsplit(origin)
+            if (
+                parts.scheme not in ("http", "https") or not parts.hostname or "*" in origin
+                or parts.path or parts.query or parts.fragment or parts.username or parts.password
+            ):
+                raise ValueError(
+                    "ALLOWED_ORIGINS must be exact origins such as https://example.com or "
+                    "http://localhost:5173, comma separated, with no wildcard or path"
+                )
+        return ",".join(origins)
+
+    @property
+    def allowed_origin_list(self) -> list[str]:
+        return [origin for origin in self.allowed_origins.split(",") if origin]
 
     @property
     def max_upload_bytes(self) -> int:

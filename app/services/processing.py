@@ -154,7 +154,8 @@ def _prepared_exists(session_factory: sessionmaker, document_id: uuid.UUID) -> b
 def _embed_missing(session_factory: sessionmaker, ai: AIClient, document_id: uuid.UUID, title: str) -> bool:
     """Stage 3: embed every chunk still without an embedding, a batch at a
     time, saving each batch. False if the document was deleted meanwhile.
-    Raises AIServiceError if a batch can't be embedded."""
+    Raises AIServiceError if a batch can't be embedded. A batch embedded by
+    a fake AI marks the document embedded_with_fake_ai."""
     batch_size = settings.embedding_batch_size
     while True:
         with session_factory() as db:
@@ -178,13 +179,17 @@ def _embed_missing(session_factory: sessionmaker, ai: AIClient, document_id: uui
             raise AIServiceError("missing embeddings")
 
         with session_factory() as db, db.begin():
-            if _lock_if_processing(db, document_id) is None:
+            document = _lock_if_processing(db, document_id)
+            if document is None:
                 logger.info("Document %s was deleted during embedding; stopped", document_id)
                 return False
             db.execute(
                 update(DocumentChunk),
                 [{"id": chunk_id, "embedding": vector} for (chunk_id, *_), vector in zip(batch, vectors)],
             )
+            if ai.is_fake:
+                # Saved with the batch: the real AI must never use these vectors
+                document.embedded_with_fake_ai = True
 
 
 def _finish_ready(session_factory: sessionmaker, document_id: uuid.UUID) -> None:
@@ -284,6 +289,14 @@ def process_document(
 
 
 # --- At startup ------------------------------------------------------------------------------
+
+def forget_fake_embeddings(db: Session, document: Document) -> None:
+    """Before a document embedded by the fake AI is retried with the real
+    one: every chunk loses its embedding, so stage 3 embeds them all again,
+    and the mark is cleared. In the caller's transaction."""
+    db.execute(update(DocumentChunk).where(DocumentChunk.document_id == document.id).values(embedding=None))
+    document.embedded_with_fake_ai = False
+
 
 def mark_stuck_documents(session_factory: sessionmaker, timeout_minutes: int) -> int:
     """Documents still processing after the timeout can't finish any more

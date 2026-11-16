@@ -14,7 +14,7 @@ from app.models.document import RETRYABLE_CODES, STATUS_FAILED, STATUS_PROCESSIN
 from app.schemas.document import DocumentResponse, FileLinkResponse, PageResponse, SectionResponse
 from app.services import documents as docs
 from app.services.ai import AIClient
-from app.services.processing import process_document
+from app.services.processing import forget_fake_embeddings, process_document
 from app.services.storage import UNAVAILABLE_MESSAGE, Storage, StorageError, document_key
 from app.services.uploads import Upload, UploadInvalid, UploadTooLarge, read_upload
 from app.services.workspaces import get_personal_workspace
@@ -331,16 +331,22 @@ def retry_document(
 ):
     """Restarts processing for a document that failed with interrupted or
     ai_unavailable, from the first unfinished stage: a document whose
-    embeddings failed only redoes the embeddings. Any other status or code
+    embeddings failed only redoes the embeddings. A ready document embedded
+    by the local fake AI (AI_PROVIDER=fake) can also be retried once the real
+    AI is in use: all its embeddings are redone. Any other status or code
     gets 409 retry_not_allowed, because the same file would fail the same
     way. Answers 202 with status processing; check GET /documents/{id}."""
     # The workspace lock first, as in upload: the retried document counts
     # toward the limit again, and two requests must not both pass the check
     db.execute(select(Workspace.id).where(Workspace.id == document.workspace_id).with_for_update())
     db.refresh(document, with_for_update=True)  # read its status again, locked
-    if document.status != STATUS_FAILED or document.error_code not in RETRYABLE_CODES:
+    fake_embeddings = document.status == STATUS_READY and document.embedded_with_fake_ai and not ai.is_fake
+    if fake_embeddings:
+        # Already counted toward the limit, as a ready document
+        forget_fake_embeddings(db, document)
+    elif document.status != STATUS_FAILED or document.error_code not in RETRYABLE_CODES:
         raise retry_not_allowed()
-    if docs.count_counted_documents(db, document.workspace_id) >= settings.max_documents_per_workspace:
+    elif docs.count_counted_documents(db, document.workspace_id) >= settings.max_documents_per_workspace:
         raise document_limit_reached()
 
     document.status = STATUS_PROCESSING

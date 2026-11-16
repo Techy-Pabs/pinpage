@@ -26,6 +26,7 @@ CHUNKS_REVISION = "c5d2e7f84a16"
 CONVERSATIONS_REVISION = "e8b3f0a2c7d4"
 USAGE_REVISION = "f4a9c1d6e2b8"
 SECTION_KIND_REVISION = "0b6d3e9f1a57"
+MESSAGE_MODE_REVISION = "1c8e5a7b3d90"
 M1_TABLES = {"users", "workspaces", "workspace_members", "documents", "document_pages"}
 RUN_A_TABLES = M1_TABLES | {"document_sections", "document_chunks"}
 CONVERSATION_TABLES = RUN_A_TABLES | {"conversations", "messages"}
@@ -76,7 +77,10 @@ def test_upgrade_matches_the_models(migrations_engine, alembic_config):
 def test_upgrade_downgrade_and_upgrade_again(migrations_engine, alembic_config):
     command.upgrade(alembic_config, "head")
 
-    command.downgrade(alembic_config, "-1")  # undo only the message mode migration
+    command.downgrade(alembic_config, "-1")  # undo only the fake embeddings mark
+    assert tables(migrations_engine) == ALL_TABLES
+
+    command.downgrade(alembic_config, "-1")  # then only the message mode migration
     assert tables(migrations_engine) == ALL_TABLES
 
     command.downgrade(alembic_config, "-1")  # then only the section kind migration
@@ -255,3 +259,23 @@ def test_existing_answers_get_mode_question(migrations_engine, alembic_config):
     with migrations_engine.connect() as conn:
         rows = dict(conn.execute(text("SELECT role, mode FROM messages")).all())
     assert rows == {"user": None, "assistant": "question"}
+
+
+def test_existing_documents_are_not_marked_as_fake_embedded(migrations_engine, alembic_config):
+    command.upgrade(alembic_config, MESSAGE_MODE_REVISION)
+    with migrations_engine.begin() as conn:
+        workspace_id = conn.scalar(text(
+            "INSERT INTO workspaces (id, name, kind) VALUES (gen_random_uuid(), 'Personal', 'personal') RETURNING id"
+        ))
+        conn.execute(text(
+            "INSERT INTO documents (id, workspace_id, title, original_filename, storage_key, size_bytes, sha256, "
+            "status) VALUES (gen_random_uuid(), :w, 't', 't.pdf', 'k', 1, repeat('a', 64), 'ready')"
+        ), {"w": workspace_id})
+
+    command.upgrade(alembic_config, "head")
+    with migrations_engine.connect() as conn:
+        assert conn.scalar(text("SELECT embedded_with_fake_ai FROM documents")) is False
+
+    command.downgrade(alembic_config, MESSAGE_MODE_REVISION)
+    with migrations_engine.connect() as conn:
+        assert conn.scalar(text("SELECT count(*) FROM documents")) == 1  # the document stays

@@ -3,6 +3,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -12,6 +13,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    false,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -90,6 +92,11 @@ class Document(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # True once any of its chunks was embedded by the fake AI (AI_PROVIDER=fake,
+    # local development only). Fake vectors mean nothing to the real model,
+    # so the real AI won't answer questions about it until it is retried,
+    # which embeds every chunk again
+    embedded_with_fake_ai: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
 
 class DocumentPage(Base):

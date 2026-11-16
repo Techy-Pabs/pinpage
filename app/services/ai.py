@@ -198,6 +198,9 @@ class RequestPacer:
 
 
 class AIClient(ABC):
+    # True for FakeAI: its embeddings mean nothing to the real model
+    is_fake = False
+
     @abstractmethod
     def generate(self, system_prompt: str, history: list[ChatMessage], max_tokens: int | None = None) -> ChatReply:
         """The chat model's reply, possibly cut off at max_tokens (the
@@ -444,6 +447,7 @@ class FakeAI(AIClient):
     timeout.
     """
 
+    is_fake = True
     # Stands in for AI_TIMEOUT_SECONDS
     usual_timeout = 45.0
 
@@ -500,8 +504,41 @@ class FakeAI(AIClient):
         return values
 
 
+class LocalFakeAI(FakeAI):
+    """AI_PROVIDER=fake, for clicking through the app locally without
+    spending free requests (APP_ENV=development only). The tests' FakeAI,
+    except that answers cite the first excerpt, and nothing is recorded,
+    since it runs for as long as the server does.
+
+    Requests without excerpts (follow up rewrites) fail like an outage,
+    so the user's own question is used for retrieval, as it is when a
+    real rewrite fails."""
+
+    reply = (
+        "This is a fake answer for local development, so it doesn't read the excerpts: "
+        "it always cites the first one [S1]."
+    )
+
+    def __init__(self, dimensions: int):
+        super().__init__(dimensions)
+        self.reply = LocalFakeAI.reply
+
+    def generate(self, system_prompt: str, history: list[ChatMessage], max_tokens: int | None = None) -> ChatReply:
+        request_timeout(self.usual_timeout)  # the answer's deadline still applies
+        if "<excerpts" not in system_prompt and "<part_summaries" not in system_prompt:
+            raise AIServiceError("the fake AI only answers from excerpts")
+        return ChatReply(self.reply, "stop", "fake", 0, 0)
+
+    def embed_batch(self, texts: list[str], mode: EmbeddingMode) -> list[list[float]]:
+        request_timeout(self.usual_timeout)
+        return [self.vector_for(text) for text in texts]
+
+
 @lru_cache(maxsize=1)
-def default_ai() -> OpenRouterAI:
-    """The app's one OpenRouterAI, built from settings on first use. One
-    instance means one pacer for the whole process."""
+def default_ai() -> AIClient:
+    """The app's one AI client, built from settings on first use: the fake
+    one with AI_PROVIDER=fake, otherwise OpenRouterAI. One instance means
+    one pacer for the whole process."""
+    if settings.ai_provider == "fake":
+        return LocalFakeAI(settings.embedding_dimensions)
     return OpenRouterAI.from_settings(settings)

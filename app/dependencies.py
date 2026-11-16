@@ -47,7 +47,8 @@ def get_storage() -> Storage:
 
 
 def get_ai() -> AIClient:
-    """The AI: OpenRouter in the app.
+    """The AI: OpenRouter in the app, or the local fake AI with
+    AI_PROVIDER=fake (APP_ENV=development only).
 
     Tests replace it with FakeAI through app.dependency_overrides, like
     storage, so no test can call OpenRouter.
