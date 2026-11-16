@@ -296,8 +296,9 @@ class OpenRouterAI(AIClient):
             if _is_daily_limit(error):
                 logger.warning("AI %s: provider returned HTTP 429 (daily limit)", operation)
                 raise DailyLimitReached() from None
-            # Only the status code: the error body could echo the request
-            logger.warning("AI %s: provider returned HTTP %s", operation, error.status_code)
+            # The status code and OpenRouter's reason fields, never the
+            # message text: the error body could echo the request
+            logger.warning("AI %s: provider returned HTTP %s%s", operation, error.status_code, reported_reason(error.body))
             raise AIServiceError(f"provider returned HTTP {error.status_code}") from None
         except openai.OpenAIError as error:
             # Timeouts, connection failures, etc.
@@ -316,9 +317,13 @@ class OpenRouterAI(AIClient):
             max_tokens=max_tokens,
             timeout=timeout,
             # OpenRouter's fallback list: if the first model can't answer
-            # (for example its provider is down), the next one is tried
+            # (for example its provider is down), the next one is tried,
+            # all within this one request
             **({"extra_body": {"models": models}} if len(models) > 1 else {}),
         ))
+        if len(models) > 1 and not _same_model(response.model, models[0]):
+            # OpenRouter doesn't say why the primary didn't answer, only who did
+            logger.warning("AI primary chat model %s didn't answer; fallback model=%s did", models[0], response.model)
         choice = response.choices[0] if response.choices else None
         reply = (choice.message.content if choice else None) or ""
         finish_reason = getattr(choice, "finish_reason", None)
@@ -351,28 +356,11 @@ class OpenRouterAI(AIClient):
         return result(reply.strip())
 
     def generate(self, system_prompt: str, history: list[ChatMessage], max_tokens: int | None = None) -> ChatReply:
-        """The first attempt asks the primary model alone, so if it fails we
-        know why and log it; the second asks the fallback models (OpenRouter
-        tries them in order), or the primary again if there are none."""
+        """Each attempt sends the primary model and its fallbacks in one
+        request, as OpenRouter's fallback list: OpenRouter tries them in
+        order. At most MAX_ATTEMPTS attempts, as for every request."""
         limit = max_tokens or self._max_tokens
-        primary, fallbacks = self.chat_models[0], self.chat_models[1:]
-        attempts = 0
-
-        def request() -> ChatReply:
-            nonlocal attempts
-            attempts += 1
-            first = attempts == 1
-            try:
-                return self._reply_once(
-                    system_prompt, history, limit, [primary] if first or not fallbacks else fallbacks
-                )
-            except AIServiceError as error:
-                if first and fallbacks:
-                    # Our own message: a status code or an error type, never text
-                    logger.warning("AI primary chat model %s failed (%s); using the fallback models", primary, error)
-                raise
-
-        return self._attempts("reply", request)
+        return self._attempts("reply", lambda: self._reply_once(system_prompt, history, limit, self.chat_models))
 
     # --- Embeddings --------------------------------------------------------------------
 
@@ -400,6 +388,35 @@ class OpenRouterAI(AIClient):
         vectors = self._attempts("embedding", lambda: self._embed_once(texts, mode))
         logger.info("Embedded %d texts (%s) with model=%s", len(texts), mode, self.embedding_model)
         return vectors
+
+
+# A provider name from OpenRouter's error metadata, kept only if it looks
+# like a name, so nothing else from the body can reach the logs
+_PROVIDER_NAME = re.compile(r"^[A-Za-z0-9 ._()-]{1,40}$")
+
+
+def reported_reason(body) -> str:
+    """" (code 429, provider Chutes)" from OpenRouter's error body: its error
+    code and the provider that failed, when it reports them. Never the
+    message or any other text, which could echo the request."""
+    error = body.get("error", body) if isinstance(body, dict) else None
+    if not isinstance(error, dict):
+        return ""
+    parts = []
+    code = error.get("code")
+    if isinstance(code, int) or (isinstance(code, str) and code.isdigit()):
+        parts.append(f"code {code}")
+    metadata = error.get("metadata")
+    provider = metadata.get("provider_name") if isinstance(metadata, dict) else None
+    if isinstance(provider, str) and _PROVIDER_NAME.match(provider):
+        parts.append(f"provider {provider}")
+    return f" ({', '.join(parts)})" if parts else ""
+
+
+def _same_model(answered: str | None, asked: str) -> bool:
+    """True if the model that answered is the one asked for. OpenRouter may
+    leave out the ":free" variant, so only the part before ":" counts."""
+    return answered is None or answered.split(":")[0] == asked.split(":")[0]
 
 
 def _token_counts(response) -> tuple[int | None, int | None]:

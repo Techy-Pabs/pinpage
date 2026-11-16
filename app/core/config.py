@@ -70,8 +70,9 @@ class Settings(BaseSettings):
     # A specific free chat model. Avoid openrouter/free: it can route chat to
     # a safety classifier that answers "User Safety: safe" instead of replying.
     ai_chat_model: str = "nvidia/nemotron-3-ultra-550b-a55b:free"
-    # Tried in order if the chat model can't answer (comma separated)
-    ai_chat_fallback_models: str = "nvidia/nemotron-3.5-super-vl:free"
+    # Tried in order if the chat model can't answer (comma separated). The
+    # primary and fallbacks were chosen from the Milestone 4 comparison
+    ai_chat_fallback_models: str = "nvidia/nemotron-3.5-lightning:free,nvidia/nemotron-3.5-super-vl:free"
     ai_embedding_model: str = "nvidia/nemotron-3-embed-1b:free"
     # Must match the document_chunks.embedding column, fixed by the migration
     embedding_dimensions: int = 2048
@@ -95,9 +96,10 @@ class Settings(BaseSettings):
 
     # Answering questions: at most this many chunks of the document per
     # question, each at least this similar (cosine similarity, -1 to 1).
-    # 0.30 is ShopAssist's tuned value; tuned for Pinpage in Milestone 4.
+    # 0.35 was chosen from the quality check's cut off table (Milestone 4):
+    # it keeps an expected section for every answerable question.
     retrieval_top_k: int = Field(default=6, gt=0, le=20)
-    retrieval_min_similarity: float = Field(default=0.30, ge=-1, le=1)
+    retrieval_min_similarity: float = Field(default=0.35, ge=-1, le=1)
     # The whole answer to one question (rewrite, embedding, every attempt
     # and every summary part) must finish within this, or it is 503
     # ai_unavailable with nothing saved or counted

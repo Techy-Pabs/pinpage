@@ -212,11 +212,13 @@ def test_langsmith_tracing_is_off_by_default():
     )
 
 
-def test_answer_settings_default_to_6_chunks_0_30_and_20_questions():
+def test_answer_settings_default_to_6_chunks_0_35_and_20_questions(monkeypatch):
+    for name in ("RETRIEVAL_TOP_K", "RETRIEVAL_MIN_SIMILARITY", "DAILY_QUESTIONS_PER_USER"):
+        monkeypatch.delenv(name, raising=False)  # the code's defaults, not the environment's
     settings = make()
 
     assert settings.retrieval_top_k == 6
-    assert settings.retrieval_min_similarity == 0.30  # ShopAssist's tuned value
+    assert settings.retrieval_min_similarity == 0.35  # chosen from the cut off table
     assert settings.daily_questions_per_user == 20
 
 

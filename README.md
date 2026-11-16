@@ -103,8 +103,10 @@ All set in `.env`, so they change without code changes:
 | `CHUNK_SIZE`, `CHUNK_OVERLAP` | 1000, 150 | Characters per chunk, and characters neighbouring chunks share |
 | `EMBEDDING_BATCH_SIZE` | 64 | Chunks per embedding request |
 | `AI_REQUESTS_PER_MINUTE` | 15 | AI requests a minute at most, safely under OpenRouter's 20. Each request gets at most 2 attempts |
+| `AI_CHAT_MODEL` | `nvidia/nemotron-3-ultra-550b-a55b:free` | The chat model (chosen from the Milestone 4 model comparison) |
+| `AI_CHAT_FALLBACK_MODELS` | `nvidia/nemotron-3.5-lightning:free,nvidia/nemotron-3.5-super-vl:free` | Tried in order if the chat model can't answer. All are sent in one request, as OpenRouter's fallback list |
 | `RETRIEVAL_TOP_K` | 6 | Excerpts of the document sent with a question at most |
-| `RETRIEVAL_MIN_SIMILARITY` | 0.30 | How similar an excerpt must be to be used (ShopAssist's tuned value) |
+| `RETRIEVAL_MIN_SIMILARITY` | 0.35 | How similar an excerpt must be to be used (chosen from the quality check's cut off table) |
 | `DAILY_QUESTIONS_PER_USER` | 20 | Questions per user per day, counted in UTC (429 after that) |
 | `ANSWER_TIME_LIMIT_SECONDS` | 90 | Longest time one answer may take, across all its AI requests (rewrite, embedding, every attempt, every summary part). Each request's timeout shrinks to the time left; past it, 503 `ai_unavailable` with nothing saved or counted |
 | `MAX_PAGES_PER_QUESTION` | 3 | Pages read for one page question; more are cut, with a note in the answer |
@@ -113,7 +115,7 @@ All set in `.env`, so they change without code changes:
 | `REWRITE_FOLLOW_UPS` | true | Rewrite short follow up questions before retrieval; false turns it off |
 | `SUMMARY_MAX_PARTS` | 4 | Parts one summary may use (so at most 5 requests); above that, Pinpage suggests the subsections instead. A summary counts as one question |
 
-The AI models and the other AI settings are in `.env.example`, with the values ShopAssist uses. The free daily OpenRouter allowance is shared by everything on your account, including the live ShopAssist demo.
+The other AI settings (the embedding model, the timeout, the output limits) are in `.env.example`. The free daily OpenRouter allowance is shared by everything on your account, including the live ShopAssist demo.
 
 The page and document limits are low on purpose, to protect the free daily AI requests once embeddings arrive in Milestone 2.
 

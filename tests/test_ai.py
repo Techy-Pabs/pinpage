@@ -182,15 +182,16 @@ def test_no_texts_means_no_request():
 
 # --- Chat ---------------------------------------------------------------------------------------
 
-def test_reply_asks_the_primary_model_first_and_strips_the_reply():
+def test_reply_sends_the_primary_and_its_fallbacks_in_one_request_and_strips_the_reply():
     ai, calls = make_ai([chat("  Ready.  ")])
 
     reply = ai.generate_reply("System prompt", [{"role": "user", "content": "Hi"}])
 
     assert reply == "Ready."
+    assert len(calls) == 1
     assert calls[0]["model"] == "chat-model"
+    assert calls[0]["extra_body"] == {"models": ["chat-model", "fallback-model"]}  # OpenRouter's fallback list
     assert calls[0]["messages"][0] == {"role": "system", "content": "System prompt"}
-    assert "extra_body" not in calls[0]  # the primary model alone first
     assert calls[0]["max_tokens"] == 1000
 
 
@@ -262,25 +263,81 @@ def test_fake_ai_can_give_a_cut_off_reply():
     assert fake.generate("System", []).text == fake.reply
 
 
+def test_when_a_fallback_answers_the_log_says_which_model_did(caplog):
+    ai, calls = make_ai([chat("Ready", model="fallback-2")], models=("chat-model:free", "fallback-1", "fallback-2"))
+
+    with caplog.at_level(logging.INFO, logger="app.services.ai"):
+        reply = ai.generate("System", [{"role": "user", "content": SECRET_TEXT}])
+
+    assert (reply.text, reply.model) == ("Ready", "fallback-2")
+    assert len(calls) == 1 and calls[0]["extra_body"] == {"models": ["chat-model:free", "fallback-1", "fallback-2"]}
+    assert "primary chat model chat-model:free didn't answer; fallback model=fallback-2 did" in caplog.text
+    assert SECRET_TEXT not in caplog.text
+
+
+def test_the_primary_answering_logs_no_fallback(caplog):
+    # OpenRouter may name the model without its ":free" variant
+    ai, _ = make_ai([chat("Ready", model="chat-model")], models=("chat-model:free", "fallback-1"))
+
+    with caplog.at_level(logging.INFO, logger="app.services.ai"):
+        ai.generate("System", [])
+
+    assert "AI reply from model=chat-model:" in caplog.text
+    assert "didn't answer" not in caplog.text
+
+
 @pytest.mark.parametrize(("failure", "reason"), [
     (lambda: rate_limited(), "provider returned HTTP 429"),
     (lambda: openai.APITimeoutError(request=REQUEST), "request failed (APITimeoutError)"),
     (lambda: chat(""), "empty reply"),
 ])
-def test_when_the_primary_fails_the_reason_is_logged_and_the_fallbacks_answer(caplog, failure, reason):
+def test_a_failed_reply_is_logged_and_tried_once_more_with_the_whole_list(caplog, failure, reason):
     ai, calls = make_ai(
-        [failure(), chat("Ready", model="fallback-model")], models=("chat-model", "fallback-1", "fallback-2")
+        [failure(), chat("Ready", model="chat-model")], models=("chat-model", "fallback-1", "fallback-2")
     )
 
     with caplog.at_level(logging.INFO, logger="app.services.ai"):
         reply = ai.generate_reply("System", [{"role": "user", "content": SECRET_TEXT}])
 
     assert reply == "Ready"
-    assert [c["model"] for c in calls] == ["chat-model", "fallback-1"]
-    assert calls[1]["extra_body"] == {"models": ["fallback-1", "fallback-2"]}
-    assert f"primary chat model chat-model failed ({reason}); using the fallback models" in caplog.text
-    assert "model=fallback-model" in caplog.text
+    assert len(calls) == 2  # at most 2 attempts, as before
+    assert all(c["extra_body"] == {"models": ["chat-model", "fallback-1", "fallback-2"]} for c in calls)
+    assert f"AI reply attempt 1 failed ({reason}); trying once more" in caplog.text
     assert SECRET_TEXT not in caplog.text
+
+
+def test_two_failed_attempts_are_an_error():
+    ai, calls = make_ai([rate_limited(), rate_limited(), chat("unused")])
+
+    with pytest.raises(AIServiceError, match="HTTP 429"):
+        ai.generate("System", [])
+    assert len(calls) == 2
+
+
+def openrouter_failure(body) -> openai.APIStatusError:
+    request = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+    return openai.InternalServerError(SECRET_TEXT, response=httpx.Response(502, request=request), body=body)
+
+
+def test_the_failure_reason_openrouter_reports_is_logged_never_its_text(caplog):
+    body = {"code": 502, "message": SECRET_TEXT, "metadata": {"provider_name": "Chutes", "raw": SECRET_TEXT}}
+    ai, _ = make_ai([openrouter_failure(body), openrouter_failure({"error": body})])
+
+    with caplog.at_level(logging.INFO, logger="app.services.ai"), pytest.raises(AIServiceError):
+        ai.generate("System", [])
+
+    assert caplog.text.count("provider returned HTTP 502 (code 502, provider Chutes)") == 2
+    assert SECRET_TEXT not in caplog.text
+
+
+@pytest.mark.parametrize("body", [
+    None, "text", {"error": "text"}, {"message": SECRET_TEXT},
+    {"code": "Boom " + SECRET_TEXT, "metadata": {"provider_name": SECRET_TEXT + "\nInjected log line"}},
+])
+def test_a_body_without_safe_reason_fields_adds_nothing_to_the_log(body):
+    from app.services.ai import reported_reason
+
+    assert reported_reason(body) == ""
 
 
 def test_with_one_model_the_second_attempt_asks_it_again(caplog):
@@ -359,7 +416,9 @@ def clean_env(monkeypatch):
 def test_ai_defaults_match_shopassist(clean_env):
     settings = make_settings()
 
-    assert settings.ai_chat_models == ["nvidia/nemotron-3-ultra-550b-a55b:free", "nvidia/nemotron-3.5-super-vl:free"]
+    assert settings.ai_chat_models == [
+        "nvidia/nemotron-3-ultra-550b-a55b:free", "nvidia/nemotron-3.5-lightning:free", "nvidia/nemotron-3.5-super-vl:free",
+    ]
     assert settings.ai_embedding_model == "nvidia/nemotron-3-embed-1b:free"
     assert settings.embedding_dimensions == 2048
     assert settings.ai_timeout_seconds == 45
