@@ -36,7 +36,7 @@ docker compose up --build
 
 Migrations run automatically before the API starts. Open http://localhost:8001/docs for Swagger: register, log in, click **Authorize** and paste the token, then try the document endpoints.
 
-The app refuses to start if `DATABASE_URL`, `JWT_SECRET` or any `R2_` value is missing or empty. Without `OPENROUTER_API_KEY` it starts, but documents fail with `ai_unavailable` until the key is set (then retry them). It doesn't contact R2 or OpenRouter at startup; connections are made on first use.
+The app refuses to start if `DATABASE_URL`, `JWT_SECRET` or any `R2_` value is missing or empty, and, with `APP_ENV=production` (the default), if `ALLOWED_ORIGINS` is. Without `OPENROUTER_API_KEY` it starts, but documents fail with `ai_unavailable` until the key is set (then retry them). It doesn't contact R2 or OpenRouter at startup; connections are made on first use.
 
 ### Without spending AI requests (fake AI)
 
@@ -111,7 +111,7 @@ All set in `.env`, so they change without code changes:
 | `PROCESSING_TIMEOUT_MINUTES` | 15 | When a document still processing counts as interrupted |
 | `PDF_PARSE_TIME_LIMIT_SECONDS` | 60 | Longest time reading one PDF may take, in a separate process; then it fails with `too_complex` |
 | `JWT_EXPIRE_MINUTES` | 30 | How long a login lasts |
-| `ALLOWED_ORIGINS` | `http://localhost:5173` | Browser origins allowed to call the API (CORS), comma separated: exact origins, no wildcard or path |
+| `ALLOWED_ORIGINS` | required in production; `http://localhost:5173` in development | Browser origins allowed to call the API (CORS), comma separated: exact origins, no wildcard or path. With `APP_ENV=production` the app refuses to start if it is unset or empty; in development, set but empty logs a warning (no browser may call the API) |
 | `APP_ENV` | production | `development` only on your own machine |
 | `AI_PROVIDER` | openrouter | `fake` for local development without AI requests; only with `APP_ENV=development` |
 | `LOGIN_ATTEMPTS_PER_15_MIN` | 10 | Failed logins per email and per IP address in any 15 minutes; then 429 `too_many_attempts` with `Retry-After`. A successful login doesn't count |
@@ -214,8 +214,8 @@ The change takes effect on the user's next request; no new login is needed.
 - Passwords are hashed with Argon2 and never returned or echoed in error messages.
 - Every login or token failure gets the same 401, and an unknown email costs as much time as a wrong password, so the API doesn't reveal which emails have accounts.
 - Failed logins are limited per email and per IP address, and registrations per IP address. The 429 is the same whether or not the email has an account. The counts are kept in memory, which is right for the single worker the app runs; before running several workers or instances they must move to a shared store such as Redis, or each one would allow the full limit.
-- Only the origins in `ALLOWED_ORIGINS` may call the API from a browser (CORS). No wildcard is accepted, and credentials (cookies) are not allowed, since the token travels in the `Authorization` header.
-- The fake AI can't be switched on outside `APP_ENV=development`, and documents it embedded are never answered by the real AI until they are retried.
+- Only the origins in `ALLOWED_ORIGINS` may call the API from a browser (CORS). A production app refuses to start without them, so it never falls back to the local frontend's origin. No wildcard is accepted, and credentials (cookies) are not allowed, since the token travels in the `Authorization` header.
+- The fake AI can't be switched on outside `APP_ENV=development`, and documents it embedded (even partly) are never answered by the real AI, on any path, until they are retried; a retry embeds the whole document again.
 - Admin rights are read from the database on every request, not from the token.
 - All ids are UUIDs, so they cannot be guessed by counting.
 - Every documents query joins on workspace membership, so a document you can't reach is never even loaded. Someone else's document, a missing one and a malformed id all get the same 404.

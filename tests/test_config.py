@@ -13,6 +13,7 @@ VALID = {
     "r2_access_key_id": "access-key-id",
     "r2_secret_access_key": "secret-access-key",
     "r2_bucket": "pinpage-test",
+    "allowed_origins": "http://localhost:5173",
 }
 
 
@@ -26,6 +27,7 @@ def no_settings_from_environment(monkeypatch):
         "LANGCHAIN_TRACING_V2", "LANGSMITH_TRACING", "LANGSMITH_TRACING_V2", "LANGCHAIN_TRACING",
         "RETRIEVAL_TOP_K", "RETRIEVAL_MIN_SIMILARITY", "DAILY_QUESTIONS_PER_USER",
         "MAX_PAGES_PER_QUESTION", "SUMMARY_PART_CHARS", "SUMMARY_MAX_PARTS", "REWRITE_FOLLOW_UPS",
+        "APP_ENV", "ALLOWED_ORIGINS", "AI_PROVIDER",
         *R2_VARIABLES,
     ]:
         monkeypatch.delenv(name, raising=False)

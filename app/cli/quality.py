@@ -51,7 +51,7 @@ from app.services import documents as docs
 from app.services import modes
 from app.services.ai import AIClient, AIServiceError, ChatMessage, ChatReply, DailyLimitReached, EmbeddingMode
 from app.services.citations import strip_markers
-from app.services.processing import ProcessingFailed, extract_pages, prepare, process_document
+from app.services.processing import ProcessingFailed, extract_pages, prepare, process_document, restart_processing
 from app.services.quality import (
     Case,
     CaseOutcome,
@@ -97,6 +97,7 @@ class RecordingAI(AIClient):
 
     def __init__(self, inner: AIClient):
         self.inner = inner
+        self.is_fake = inner.is_fake  # answering refuses fake-embedded documents to a real AI
         self.query_vectors: dict[str, list[float]] = {}
         self.replies: list[dict] = []
         self.chat_requests = 0
@@ -163,7 +164,7 @@ def ready_document(
     document = existing_document(session_factory, user_id, data)
     if document is not None and document.status == STATUS_FAILED and document.error_code in RETRYABLE_CODES:
         with session_factory() as db, db.begin():
-            db.get(Document, document.id).status = STATUS_PROCESSING  # resume, as a retry does
+            restart_processing(db, db.get(Document, document.id))  # resume, as a retry does
         process_document(document.id, storage, ai, session_factory)
     elif document is None:
         with session_factory() as db:
@@ -284,6 +285,9 @@ def run_case(session_factory: sessionmaker, ai: RecordingAI, user_id: uuid.UUID,
                 answer = modes.answer_message(db, ai, user_id, document, history, turn, follow_up)
         except DailyLimitReached:
             raise
+        except modes.EmbeddedWithFakeAI:
+            outcome = CaseOutcome(error="embedded_with_fake_ai")  # retry the document with the real AI
+            break
         except AIServiceError:
             outcome = CaseOutcome(error="ai_unavailable")
             break

@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.core.config import settings
+from app.core.config import Settings, settings
 from app.core.errors import DEFAULT_CODES, ApiError, error_body
 from app.db.session import SessionLocal
 from app.routers import auth, conversations, documents, usage
@@ -20,13 +20,20 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(name)s: %(m
 logger = logging.getLogger(__name__)
 
 
+def log_startup_warnings(config: Settings) -> None:
+    """Settings that are allowed, but only in development (the settings
+    refuse them in production), and worth a line in the log."""
+    if config.ai_provider == "fake":
+        logger.warning("AI_PROVIDER=fake: embeddings and answers are fake, for local development only")
+    if not config.allowed_origin_list:
+        logger.warning("ALLOWED_ORIGINS is set but empty: no browser origin may call the API, not even the frontend")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Runs once when the app starts, with the session factory kept on
     # app.state (see below), the same one background tasks get
-    if settings.ai_provider == "fake":
-        # Only possible with APP_ENV=development (checked by the settings)
-        logger.warning("AI_PROVIDER=fake: embeddings and answers are fake, for local development only")
+    log_startup_warnings(settings)
     try:
         mark_stuck_documents(app.state.session_factory, settings.processing_timeout_minutes)
     except Exception as error:

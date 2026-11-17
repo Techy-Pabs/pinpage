@@ -2,6 +2,7 @@
 GET /usage, and the local fake AI. FakeAI and FakeStorage only; nothing
 here contacts OpenRouter or R2."""
 
+import logging
 import os
 import subprocess
 import sys
@@ -11,13 +12,13 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import func, select
 
-from app.core.config import Settings, settings
+from app.core.config import DEVELOPMENT_ORIGIN, Settings, settings
 from app.dependencies import get_ai
-from app.main import app
+from app.main import app, log_startup_warnings
 from app.models import Document, DocumentChunk, Message, QuestionUsage, User
 from app.models.document import STATUS_READY
 from app.services import ai as ai_module
-from app.services import answering
+from app.services import answering, modes
 from app.services.ai import AIServiceError, FakeAI, LocalFakeAI, OpenRouterAI
 from app.services.prompts import NOT_FOUND_MESSAGE
 from tests.pdfs import LONG_TEXT, outlined_pdf
@@ -25,12 +26,22 @@ from tests.pdfs import LONG_TEXT, outlined_pdf
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VALID = dict(
     database_url="postgresql://u:p@h/db", jwt_secret="x", r2_account_id="a", r2_access_key_id="b",
-    r2_secret_access_key="c", r2_bucket="d",
+    r2_secret_access_key="c", r2_bucket="d", allowed_origins="http://localhost:5173",
 )
+UNSET = object()
 
 
 def make_settings(**changes) -> Settings:
-    return Settings(_env_file=None, **{**VALID, **changes})
+    """Settings from these values only (UNSET leaves a value out), never
+    from the container's environment."""
+    values = {**VALID, **changes}
+    return Settings(_env_file=None, **{k: v for k, v in values.items() if v is not UNSET})
+
+
+@pytest.fixture(autouse=True)
+def no_settings_from_environment(monkeypatch):
+    for name in ("APP_ENV", "ALLOWED_ORIGINS", "AI_PROVIDER"):
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture
@@ -79,9 +90,28 @@ def test_cors_refuses_any_other_origin(client):
     assert "access-control-allow-origin" not in client.get("/health", headers={"Origin": ALLOWED + ".evil.com"}).headers
 
 
-def test_allowed_origins_default_to_the_local_frontend():
-    assert Settings.model_fields["allowed_origins"].default == "http://localhost:5173"
-    assert make_settings().allowed_origin_list == ["http://localhost:5173"]
+def test_unset_allowed_origins_default_to_the_local_frontend_in_development():
+    assert DEVELOPMENT_ORIGIN == "http://localhost:5173"
+    assert make_settings(app_env="development", allowed_origins=UNSET).allowed_origin_list == [DEVELOPMENT_ORIGIN]
+
+
+@pytest.mark.parametrize("app_env", [UNSET, "production"])
+@pytest.mark.parametrize("origins", [UNSET, "", " , "])
+def test_production_refuses_to_start_without_allowed_origins(app_env, origins):
+    with pytest.raises(ValidationError, match="ALLOWED_ORIGINS must be set with APP_ENV=production"):
+        make_settings(app_env=app_env, allowed_origins=origins)
+
+
+def test_development_warns_when_allowed_origins_is_set_but_empty(caplog):
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        log_startup_warnings(make_settings(app_env="development", allowed_origins=""))
+    assert "ALLOWED_ORIGINS is set but empty" in caplog.text
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        log_startup_warnings(make_settings(app_env="development", allowed_origins=UNSET))
+        log_startup_warnings(make_settings())
+    assert caplog.text == ""
 
 
 def test_allowed_origins_are_a_comma_separated_list_of_exact_origins():
@@ -153,17 +183,42 @@ def test_the_fake_ai_is_allowed_in_development():
     assert make_settings(ai_provider="fake", app_env="development").ai_provider == "fake"
 
 
-@pytest.mark.parametrize(("app_env", "starts"), [("production", False), ("development", True)])
-def test_the_app_refuses_to_start_with_the_fake_ai_outside_development(app_env, starts):
-    # A fresh process, as when the server starts. Importing the app contacts nothing.
-    env = {**os.environ, "AI_PROVIDER": "fake", "APP_ENV": app_env}
-    result = subprocess.run(
+def start_app(**env_changes):
+    """Imports the app in a fresh process, as when the server starts, with
+    these environment changes (None removes a variable). Contacts nothing."""
+    env = {**os.environ, "ALLOWED_ORIGINS": "http://localhost:5173"}
+    for name, value in env_changes.items():
+        if value is None:
+            env.pop(name, None)
+        else:
+            env[name] = value
+    return subprocess.run(
         [sys.executable, "-c", "import app.main"], cwd=ROOT, env=env, capture_output=True, text=True, timeout=60,
     )
 
-    assert (result.returncode == 0) is starts
+
+@pytest.mark.parametrize(("app_env", "starts"), [(None, False), ("production", False), ("development", True)])
+def test_the_app_refuses_to_start_with_the_fake_ai_outside_development(app_env, starts):
+    result = start_app(AI_PROVIDER="fake", APP_ENV=app_env)  # None: APP_ENV missing
+
+    assert (result.returncode == 0) is starts, result.stderr
     if not starts:
         assert "AI_PROVIDER=fake is only allowed with APP_ENV=development" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("app_env", "origins", "starts"),
+    [
+        (None, None, False), ("production", None, False), ("production", "", False),
+        ("production", "https://pinpage.example.com", True), ("development", None, True), ("development", "", True),
+    ],
+)
+def test_the_app_refuses_to_start_in_production_without_allowed_origins(app_env, origins, starts):
+    result = start_app(AI_PROVIDER=None, APP_ENV=app_env, ALLOWED_ORIGINS=origins)
+
+    assert (result.returncode == 0) is starts, result.stderr
+    if not starts:
+        assert "ALLOWED_ORIGINS must be set with APP_ENV=production" in result.stderr
 
 
 def test_the_fake_provider_gives_the_local_fake_ai(monkeypatch):
@@ -289,6 +344,59 @@ def test_a_fake_embedded_document_cannot_be_asked_with_the_real_ai_until_it_is_r
 
     answered = ask(client, alice, document_id)
     assert answered.status_code == 201 and answered.json()["content"] == "Staff get 20 days [S1]."
+
+
+class FailingFakeAI(LocalFakeAI):
+    """The fake AI, failing like an outage after its first embedding batch."""
+
+    def embed_batch(self, texts, mode):
+        if mode == "document" and getattr(self, "batches", 0) >= 1:
+            raise AIServiceError("outage")
+        self.batches = getattr(self, "batches", 0) + 1
+        return super().embed_batch(texts, mode)
+
+
+def test_retrying_a_partly_fake_document_re_embeds_all_of_it_and_clears_the_mark(
+    client, db, alice, handbook, use_ai, monkeypatch
+):
+    monkeypatch.setattr(settings, "embedding_batch_size", 1)
+    use_ai(FailingFakeAI(settings.embedding_dimensions))
+    document_id = handbook()
+
+    document = db.get(Document, document_id)
+    assert (document.status, document.error_code, document.embedded_with_fake_ai) == ("failed", "ai_unavailable", True)
+    chunks = count(db, DocumentChunk)
+    assert chunks >= 2  # one fake batch saved, the rest still missing
+    embedded = select(func.count()).select_from(DocumentChunk).where(DocumentChunk.embedding.is_not(None))
+    assert db.scalar(embedded) == 1
+
+    real = use_ai(RealAI())
+    assert client.post(f"/documents/{document_id}/retry", headers=alice).status_code == 202
+
+    db.expire_all()
+    document = db.get(Document, document_id)
+    assert document.status == STATUS_READY and document.embedded_with_fake_ai is False
+    # Every chunk, including the one the fake AI embedded, was embedded again by the real AI
+    assert sum(len(c["texts"]) for c in real.embed_calls if c["mode"] == "document") == chunks
+    assert db.scalar(embedded) == chunks
+
+
+def test_the_answering_code_refuses_a_fake_embedded_document_to_the_real_ai(db, alice, handbook, use_ai):
+    # Every caller of answer_message, the ask route and the quality runner alike
+    use_ai(LocalFakeAI(settings.embedding_dimensions))
+    document = db.get(Document, handbook())
+    user_id = db.scalar(select(User.id).where(User.email == "alice@example.com"))
+    real = RealAI()
+
+    with pytest.raises(modes.EmbeddedWithFakeAI):
+        modes.answer_message(db, real, user_id, document, [], "How many days of annual leave?", False)
+    with pytest.raises(modes.EmbeddedWithFakeAI):
+        modes.answer_message(db, real, user_id, document, [], "What does page 1 say?", False)
+    assert real.embed_calls == [] and real.reply_calls == []  # refused before any AI request
+
+    # The fake AI itself may still answer about it
+    answer = modes.answer_message(db, LocalFakeAI(settings.embedding_dimensions), user_id, document, [], "What does page 1 say?", False)
+    assert answer.mode == "page"
 
 
 def test_retrying_a_ready_document_is_still_refused_otherwise(client, alice, handbook, use_ai):

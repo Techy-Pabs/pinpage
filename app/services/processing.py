@@ -291,11 +291,24 @@ def process_document(
 # --- At startup ------------------------------------------------------------------------------
 
 def forget_fake_embeddings(db: Session, document: Document) -> None:
-    """Before a document embedded by the fake AI is retried with the real
-    one: every chunk loses its embedding, so stage 3 embeds them all again,
-    and the mark is cleared. In the caller's transaction."""
+    """Every chunk loses its embedding, so stage 3 embeds them all again,
+    and the fake AI mark is cleared. In the caller's transaction."""
     db.execute(update(DocumentChunk).where(DocumentChunk.document_id == document.id).values(embedding=None))
     document.embedded_with_fake_ai = False
+
+
+def restart_processing(db: Session, document: Document) -> None:
+    """A retry: the document is processing again, from its first unfinished
+    stage. A document marked embedded_with_fake_ai, even partly (a fake run
+    that failed with ai_unavailable), first loses every embedding and the
+    mark, so the whole document is embedded again by whichever AI processes
+    it. In the caller's transaction."""
+    if document.embedded_with_fake_ai:
+        forget_fake_embeddings(db, document)
+    document.status = STATUS_PROCESSING
+    document.error_code = None
+    document.error_message = None
+    document.processed_at = None
 
 
 def mark_stuck_documents(session_factory: sessionmaker, timeout_minutes: int) -> int:

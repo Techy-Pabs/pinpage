@@ -185,6 +185,9 @@ def test_retry_after_ai_unavailable_only_redoes_the_embeddings(client, db, alice
 
 def test_retry_embeds_only_the_chunks_still_missing(db, client, alice, upload, fake_ai, monkeypatch):
     monkeypatch.setattr(settings, "embedding_batch_size", 2)
+    # As the real AI: a document the fake AI embedded is always embedded again in full
+    # (see test_frontend_support)
+    monkeypatch.setattr(fake_ai, "is_fake", False)
     fake_ai.fail_after_batches = 1  # the first batch works, then the AI goes down
     document_id = upload()
     assert reload(db, document_id).error_code == "ai_unavailable"

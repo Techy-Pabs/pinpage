@@ -21,11 +21,13 @@ def today_utc() -> date:
     return datetime.now(UTC).date()
 
 
-def questions_today(db: Session, user_id: uuid.UUID) -> int:
+def questions_today(db: Session, user_id: uuid.UUID, today: date | None = None) -> int:
     """The user's questions today (UTC), from question_usage: deleting
-    conversations or documents never lowers it."""
+    conversations or documents never lowers it. today: the date already
+    read by the caller, if it needs the same one (GET /usage)."""
+    day = today if today is not None else today_utc()
     count = db.scalar(
-        select(QuestionUsage.count).where(QuestionUsage.user_id == user_id, QuestionUsage.used_on == today_utc())
+        select(QuestionUsage.count).where(QuestionUsage.user_id == user_id, QuestionUsage.used_on == day)
     )
     return count or 0
 

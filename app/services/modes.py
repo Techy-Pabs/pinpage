@@ -41,6 +41,12 @@ from app.services.sections import KIND_BODY
 logger = logging.getLogger(__name__)
 
 
+class EmbeddedWithFakeAI(Exception):
+    """The document's vectors came from the local fake AI (AI_PROVIDER=fake),
+    and the real AI is in use: searching them would return meaningless
+    excerpts. Raised before any AI request; the document must be retried."""
+
+
 @dataclass
 class Answer:
     content: str
@@ -370,7 +376,9 @@ def answer_message(
 ) -> Answer:
     """The answer to one question about a ready document, in whichever mode
     it asks for. follow_up: the conversation already has an answered
-    question. Raises AIServiceError if the AI can't answer.
+    question. Raises AIServiceError if the AI can't answer, and
+    EmbeddedWithFakeAI, before any AI request, if the document was embedded
+    by the fake AI and ai is a real one (every caller is refused).
 
     Used by the ask route and by the quality check, which calls it directly
     so that quality runs never count toward a user's daily limit. Nothing is
@@ -380,6 +388,8 @@ def answer_message(
     part) shares one deadline, ANSWER_TIME_LIMIT_SECONDS: past it, the
     next AI request raises AnswerTimeUp, an AIServiceError (503). An
     answer that repeats the prompt's rules is replaced (see leak_check)."""
+    if document.embedded_with_fake_ai and not ai.is_fake:
+        raise EmbeddedWithFakeAI(str(document.id))
     with answer_deadline(settings.answer_time_limit_seconds):
         answer = _answer_message(db, ai, user_id, document, history, question, follow_up)
     if repeats_prompt(answer.content):

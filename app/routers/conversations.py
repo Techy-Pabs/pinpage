@@ -174,9 +174,6 @@ def ask_question(
     document = db.get(Document, conversation.document_id)  # reachable: checked by visible_conversation
     if document.status != STATUS_READY:
         raise document_not_ready()
-    if document.embedded_with_fake_ai and not ai.is_fake:
-        # Fake vectors mean nothing to the real model: no AI request, nothing counted
-        raise embedded_with_fake_ai()
     history = answering.recent_history(db, conversation.id)
     follow_up = answering.has_answered_question(db, conversation.id)
     db.commit()  # no transaction stays open while the AI works
@@ -184,6 +181,10 @@ def ask_question(
     # 2 to 7. What the question asks for, then the answer in that mode
     try:
         answer = modes.answer_message(db, ai, current_user.id, document, history, question, follow_up)
+    except modes.EmbeddedWithFakeAI:
+        # Fake vectors mean nothing to the real model: no AI request, nothing counted
+        db.rollback()
+        raise embedded_with_fake_ai() from None
     except AIServiceError:
         db.rollback()
         raise ai_unavailable() from None

@@ -10,6 +10,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 ACCOUNT_ID_PATTERN = re.compile(r"^[A-Za-z0-9-]+$")
 
 
+# The local frontend (Vite's port): ALLOWED_ORIGINS when it is unset in development
+DEVELOPMENT_ORIGIN = "http://localhost:5173"
+
+
 class Settings(BaseSettings):
     # Read from environment variables first, then from a .env file if present.
     # extra="ignore" skips variables the app doesn't use (e.g. POSTGRES_PASSWORD,
@@ -25,8 +29,10 @@ class Settings(BaseSettings):
     # "development" only on your own machine; anything deployed is
     # "production", the default, so nothing local only is on by accident
     app_env: Literal["development", "production"] = "production"
-    # Browser origins allowed to call the API (comma separated, CORS)
-    allowed_origins: str = "http://localhost:5173"
+    # Browser origins allowed to call the API (comma separated, CORS).
+    # Required with APP_ENV=production; in development it defaults to the
+    # local frontend (DEVELOPMENT_ORIGIN) when unset
+    allowed_origins: str | None = None
 
     # How long a login token stays valid
     jwt_expire_minutes: int = 30
@@ -199,11 +205,23 @@ class Settings(BaseSettings):
             )
         return self
 
+    @model_validator(mode="after")
+    def origins_required_in_production(self):
+        if self.app_env == "production" and not self.allowed_origins:
+            raise ValueError(
+                "ALLOWED_ORIGINS must be set with APP_ENV=production: the frontend's exact origins, "
+                "such as https://pinpage.example.com, comma separated"
+            )
+        return self
+
     @field_validator("allowed_origins")
     @classmethod
-    def origins_are_exact(cls, value: str) -> str:
+    def origins_are_exact(cls, value: str | None) -> str | None:
         """Each origin is scheme://host[:port] and nothing more: no "*", no
-        path. A trailing slash is dropped, since browsers never send one."""
+        path. A trailing slash is dropped, since browsers never send one.
+        None (unset) stays None; set but empty becomes ""."""
+        if value is None:
+            return None
         origins = [origin.strip().rstrip("/") for origin in value.split(",") if origin.strip()]
         for origin in origins:
             parts = urlsplit(origin)
@@ -219,6 +237,10 @@ class Settings(BaseSettings):
 
     @property
     def allowed_origin_list(self) -> list[str]:
+        """The origins CORS allows. Unset is only possible in development
+        (see origins_required_in_production), and means the local frontend."""
+        if self.allowed_origins is None:
+            return [DEVELOPMENT_ORIGIN]
         return [origin for origin in self.allowed_origins.split(",") if origin]
 
     @property

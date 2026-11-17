@@ -20,7 +20,7 @@ def usage(current_user: User = Depends(get_current_user), db: Session = Depends(
     conversations or documents never lowers it. No AI request."""
     today = answering.today_utc()
     return UsageResponse(
-        questions_used_today=answering.questions_today(db, current_user.id),
+        questions_used_today=answering.questions_today(db, current_user.id, today),  # the same day as resets_at
         questions_per_day=settings.daily_questions_per_user,
         resets_at=datetime.combine(today + timedelta(days=1), time.min, tzinfo=UTC),
     )

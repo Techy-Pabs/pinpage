@@ -45,6 +45,9 @@ services:
       R2_BUCKET: pinpage-test
       # The same for OpenRouter: a placeholder key, and tests use FakeAI
       OPENROUTER_API_KEY: test-openrouter-key
+      # Required with APP_ENV=production (the default), so the tests don't
+      # depend on .env having it; the CORS tests use this origin
+      ALLOWED_ORIGINS: http://localhost:5173
     depends_on:
       db:
         condition: service_healthy
