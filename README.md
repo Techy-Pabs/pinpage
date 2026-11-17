@@ -23,7 +23,7 @@ This repository has **Milestones 1 and 2**. You can register, upload a PDF, watc
 
 ## Stack
 
-FastAPI, SQLAlchemy 2, PostgreSQL 16 with pgvector (`halfvec` embeddings with an HNSW cosine index), Alembic, pypdf, LangChain's text splitter (only that), OpenRouter through the openai client, Cloudflare R2 through boto3, Argon2 password hashing, JWT login tokens, Pytest, Docker Compose and GitHub Actions.
+FastAPI, SQLAlchemy 2, PostgreSQL 16 with pgvector (`halfvec` embeddings with an HNSW cosine index), Alembic, pypdf, LangChain's text splitter (only that), OpenRouter through the openai client, Cloudflare R2 through boto3, Argon2 password hashing, JWT login tokens, Pytest, Docker Compose and GitHub Actions. The web app: React, Vite, Tailwind CSS, TypeScript and react-router, tested with Vitest and Testing Library.
 
 ## Run it locally
 
@@ -52,6 +52,21 @@ Embeddings and answers are then fake and make no AI request: every answer cites 
 A document embedded by the fake AI is marked (`embedded_with_fake_ai` on the document's row), because fake vectors mean nothing to the real model. Once you switch back to `AI_PROVIDER=openrouter`, asking about it gives 409 `embedded_with_fake_ai`; `POST /documents/{id}/retry` embeds all its chunks again with the real AI and clears the mark.
 
 The API listens on port **8001** and the database on **5433** on your machine, so Pinpage can run next to ShopAssist (which uses 8000 and 5432). Inside Docker they use the usual ports.
+
+### The web app
+
+The frontend lives in `web/` (React, Vite, Tailwind, TypeScript). With the API running as above, and Node 22:
+
+```sh
+cd web
+cp .env.example .env      # VITE_API_URL=http://localhost:8001
+npm install
+npm run dev
+```
+
+Open http://localhost:5173. It must be that port: it is the API's default `ALLOWED_ORIGINS` (CORS). Register, or sign in, and the library shows today's questions from `GET /usage`. The login token is kept in the tab's `sessionStorage`, so closing the tab signs you out; when it expires, the next request returns you to sign in, and then to the page you were on.
+
+The look follows [docs/design/DESIGN.md](docs/design/DESIGN.md): its colours and type scale are the only ones in the Tailwind theme (`web/src/theme.css`), and a test fails if a component writes a raw colour instead of a token.
 
 ## Endpoints
 
@@ -140,11 +155,14 @@ The page and document limits are low on purpose, to protect the free daily AI re
 
 ```sh
 docker compose run --rm --build tests
+cd web && npm test        # the frontend
 ```
 
 Tests use a separate database (`pinpage_test`), created automatically and emptied before every test. Test PDFs are made inside the tests, so no real documents live in the repo. GitHub Actions runs the same command on every push, using only the placeholder values in `.env.example`.
 
 No test contacts R2 or OpenRouter. The tests service replaces the R2 values and the OpenRouter key from `.env` with placeholders (see `docker-compose.yml`). Every test stores files in memory with `FakeStorage` and gets fixed embeddings and replies from `FakeAI`, and any request that reaches botocore's or the openai client's network layer fails the test.
+
+The frontend tests (Vitest and Testing Library) mock every API call; `fetch` fails in any test that doesn't. GitHub Actions runs them in a separate `web` job, with the type check and a production build.
 
 ## Check the R2 connection (manual)
 

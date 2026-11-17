@@ -8,3 +8,5 @@ __pycache__/
 venv/
 .pytest_cache/
 quality/results/
+# The frontend has its own build (web/); the API image never uses it
+web/

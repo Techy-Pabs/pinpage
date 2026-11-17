@@ -1,0 +1,117 @@
+/* The answer booklet design system (docs/design/DESIGN.md). The only file
+   allowed to hold raw colour values: everything else uses these tokens
+   (src/test/design.test.ts fails otherwise). */
+
+@import "tailwindcss";
+
+@theme {
+  /* Only the design's colours exist: Tailwind's own palette is removed */
+  --color-*: initial;
+  --color-cover: #0E5446;
+  --color-cover-ink: #F1F5F2;
+  --color-cover-muted: #A9C7BD;
+  --color-desk: #EEF0EE;
+  --color-sheet: #FFFFFF;
+  --color-ink: #1A1D21;
+  --color-ink-muted: #59606A;
+  --color-rule: #D9DDDA;
+  --color-field: #7C847F;
+  --color-margin-rule: #E8B4B0;
+  --color-ballpoint: #1F3FB0;
+  --color-ballpoint-tint: #E8ECFA;
+  --color-examiner: #C2372F;
+  --color-examiner-tint: #FBEAE8;
+  --color-waiting: #8A5A00;
+
+  --font-*: initial;
+  --font-sans: "Public Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-wordmark: "Archivo Narrow", "Public Sans", ui-sans-serif, sans-serif;
+
+  /* The type scale; only these sizes exist */
+  --text-*: initial;
+  --text-page-title: 1.75rem;
+  --text-page-title--line-height: 2.125rem;
+  --text-page-title--font-weight: 600;
+  --text-document-title: 1.25rem;
+  --text-document-title--line-height: 1.625rem;
+  --text-document-title--font-weight: 600;
+  --text-heading: 1rem;
+  --text-heading--line-height: 1.375rem;
+  --text-heading--font-weight: 600;
+  --text-question: 1.0625rem;
+  --text-question--line-height: 1.625rem;
+  --text-question--font-weight: 500;
+  --text-question-phone: 1rem;
+  --text-question-phone--line-height: 1.5rem;
+  --text-question-phone--font-weight: 500;
+  --text-answer: 1rem;
+  --text-answer--line-height: 1.625rem;
+  --text-answer-phone: 0.9375rem;
+  --text-answer-phone--line-height: 1.5rem;
+  --text-body: 0.875rem;
+  --text-body--line-height: 1.25rem;
+  --text-small: 0.8125rem;
+  --text-small--line-height: 1.125rem;
+  --text-mark: 0.8125rem;
+  --text-mark--line-height: 1rem;
+  --text-mark--font-weight: 600;
+  --text-mark-section: 0.75rem;
+  --text-mark-section--line-height: 1rem;
+  /* Form fields: 16px, so phones don't zoom in on focus */
+  --text-field: 1rem;
+  --text-field--line-height: 1.5rem;
+  /* The wordmark */
+  --text-wordmark: 1.25rem;
+  --text-wordmark--line-height: 1.5rem;
+  --text-wordmark--letter-spacing: 0.04em;
+
+  /* 3 px everywhere */
+  --radius-*: initial;
+  --radius-sheet: 3px;
+
+  --shadow-*: initial;
+  --shadow-sheet: 0 1px 2px rgb(26 29 33 / 0.06), 0 6px 18px rgb(26 29 33 / 0.08);
+  --shadow-panel: 0 1px 2px rgb(26 29 33 / 0.05), 0 4px 12px rgb(26 29 33 / 0.06);
+
+  --container-answer: 68ch;
+}
+
+@layer base {
+  html {
+    background-color: var(--color-desk);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    caret-color: var(--color-ballpoint);
+  }
+
+  ::selection {
+    background-color: var(--color-ballpoint-tint);
+    color: var(--color-ink);
+  }
+
+  /* Focus: 2 px ballpoint outline, 2 px off the control */
+  :focus-visible {
+    outline: 2px solid var(--color-ballpoint);
+    outline-offset: 2px;
+  }
+
+  /* On the green cover, ballpoint is too dark to see: the ring uses cover ink */
+  .on-cover :focus-visible {
+    outline-color: var(--color-cover-ink);
+  }
+
+  a {
+    text-underline-offset: 3px;
+  }
+
+  input::placeholder {
+    color: var(--color-ink-muted);
+  }
+
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
