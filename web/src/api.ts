@@ -90,6 +90,8 @@ export class ApiError extends Error {
     readonly retryAfter: number | null = null,
     /** A message for each form field the API rejected, by field name */
     readonly fields: Record<string, string> = {},
+    /** Anything else the API sent with the error (e.g. existing_document) */
+    readonly extra: Record<string, unknown> = {},
   ) {
     super(message);
     this.name = "ApiError";
@@ -152,6 +154,10 @@ export function messageFor(
       const messages = Object.values(fields);
       return messages.length ? messages.join(" ") : "Some of the details aren't valid. Check them and try again.";
     }
+    case "not_pdf":
+      return "This file isn't a PDF, whatever its name says. Choose a PDF file.";
+    case "storage_error":
+      return "Pinpage couldn't reach its file storage. Try again in a moment.";
     case "not_authenticated":
       return "Your session has ended. Sign in again to continue.";
   }
@@ -164,11 +170,16 @@ async function errorFrom(response: Response): Promise<ApiError> {
   let code = "";
   let serverMessage: string | undefined;
   let details: unknown;
+  let extra: Record<string, unknown> = {};
   try {
     const body = await response.json();
     code = typeof body?.error?.code === "string" ? body.error.code : "";
     serverMessage = typeof body?.error?.message === "string" ? body.error.message : undefined;
     details = body?.error?.details;
+    if (body?.error && typeof body.error === "object") {
+      const { code: _code, message: _message, details: _details, ...rest } = body.error;
+      extra = rest;
+    }
   } catch {
     // Not our JSON envelope (a proxy's page, say): the status decides
   }
@@ -182,17 +193,19 @@ async function errorFrom(response: Response): Promise<ApiError> {
     code,
     retryAfter,
     fields,
+    extra,
   );
 }
 
 // --- Requests ----------------------------------------------------------------------------------
 
-type RequestOptions = { body?: unknown };
+type RequestOptions = { body?: unknown; form?: FormData };
 
 async function request<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {
   const token = getToken();
   const headers: Record<string, string> = { Accept: "application/json" };
   if (token) headers.Authorization = `Bearer ${token}`;
+  // A form's Content-Type (with its boundary) is set by the browser itself
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
 
   let response: Response;
@@ -200,7 +213,7 @@ async function request<T>(method: string, path: string, options: RequestOptions 
     response = await fetch(`${API_URL}${path}`, {
       method,
       headers,
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      body: options.form ?? (options.body === undefined ? undefined : JSON.stringify(options.body)),
     });
   } catch {
     throw new ApiError(NETWORK_MESSAGE, 0, "network_error");
@@ -246,4 +259,60 @@ export function signOut(): void {
 
 export function getUsage(): Promise<Usage> {
   return request<Usage>("GET", "/usage");
+}
+
+export type DocumentStatus = "processing" | "ready" | "failed";
+export type DocumentStage = "extracting" | "finding_sections" | "embedding";
+
+/** GET /documents: exactly the fields the API sends (DocumentResponse). */
+export type PinpageDocument = {
+  id: string;
+  title: string;
+  original_filename: string;
+  size_bytes: number;
+  page_count: number | null; // null until processing finishes
+  status: DocumentStatus;
+  stage: DocumentStage | null; // only while processing
+  error_code: string | null;
+  error_message: string | null;
+  created_at: string;
+  processed_at: string | null;
+};
+
+/** GET /limits: the server's own settings. */
+export type Limits = {
+  max_upload_mb: number;
+  max_pages: number;
+  max_documents_per_workspace: number;
+  questions_per_day: number;
+};
+
+/** Failures a retry can fix (the API's RETRYABLE_CODES); others need a new file. */
+export const RETRYABLE_CODES = ["interrupted", "ai_unavailable"];
+
+export function listDocuments(): Promise<PinpageDocument[]> {
+  return request<PinpageDocument[]>("GET", "/documents");
+}
+
+export function getDocument(id: string): Promise<PinpageDocument> {
+  return request<PinpageDocument>("GET", `/documents/${encodeURIComponent(id)}`);
+}
+
+/** Sends one PDF as multipart form data, in a field named "file". */
+export function uploadDocument(file: File): Promise<PinpageDocument> {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  return request<PinpageDocument>("POST", "/documents", { form });
+}
+
+export function retryDocument(id: string): Promise<PinpageDocument> {
+  return request<PinpageDocument>("POST", `/documents/${encodeURIComponent(id)}/retry`);
+}
+
+export function deleteDocument(id: string): Promise<void> {
+  return request<void>("DELETE", `/documents/${encodeURIComponent(id)}`);
+}
+
+export function getLimits(): Promise<Limits> {
+  return request<Limits>("GET", "/limits");
 }

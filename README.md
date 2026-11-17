@@ -64,7 +64,7 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173. It must be that port: it is the API's default `ALLOWED_ORIGINS` (CORS). Register, or sign in, and the library shows today's questions from `GET /usage`. The login token is kept in the tab's `sessionStorage`, so closing the tab signs you out; when it expires, the next request returns you to sign in, and then to the page you were on.
+Open http://localhost:5173. It must be that port: it is the API's default `ALLOWED_ORIGINS` (CORS). Register, or sign in, to reach the library: upload a PDF, watch it move through its stages (reading pages, finding sections, preparing for questions), retry a failed one, or delete one. While anything is processing the library checks `GET /documents` every 3 seconds, and stops when nothing is. The upload limits it shows and checks come from `GET /limits`; the server still has the last word. The login token is kept in the tab's `sessionStorage`, so closing the tab signs you out; when it expires, the next request returns you to sign in, and then to the page you were on.
 
 The look follows [docs/design/DESIGN.md](docs/design/DESIGN.md): its colours and type scale are the only ones in the Tailwind theme (`web/src/theme.css`), and a test fails if a component writes a raw colour instead of a token.
 

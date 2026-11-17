@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { Navigate, Route, Routes, useNavigate } from "react-router";
 import { HOME, setSessionEndedHandler, signInPath } from "./api";
+import { DocumentPage } from "./pages/DocumentPage";
 import { LibraryPage } from "./pages/Library";
 import { RegisterPage } from "./pages/Register";
 import { SignInPage } from "./pages/SignIn";
@@ -28,6 +29,14 @@ export function App() {
           element={
             <RequireAuth>
               <LibraryPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/documents/:id"
+          element={
+            <RequireAuth>
+              <DocumentPage />
             </RequireAuth>
           }
         />

@@ -74,6 +74,28 @@
   --shadow-panel: 0 1px 2px rgb(26 29 33 / 0.05), 0 4px 12px rgb(26 29 33 / 0.06);
 
   --container-answer: 68ch;
+
+  /* The 2 px waiting line: a short stroke moving along it */
+  --animate-waiting: waiting 1.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  @keyframes waiting {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(300%);
+    }
+  }
+
+  /* A row the user was pointed to (a duplicate upload) */
+  --animate-point-out: point-out 2.4s ease-out 1;
+  @keyframes point-out {
+    from {
+      background-color: var(--color-ballpoint-tint);
+    }
+    to {
+      background-color: transparent;
+    }
+  }
 }
 
 @layer base {

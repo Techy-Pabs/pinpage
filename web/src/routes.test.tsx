@@ -1,7 +1,7 @@
 import { screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { setToken } from "./api";
-import { mockFetch, renderApp } from "./test/helpers";
+import { libraryRoutes, mockApi, renderApp } from "./test/helpers";
 
 describe("the protected library", () => {
   it("sends a signed-out visitor to sign in, remembering the page", async () => {
@@ -18,19 +18,21 @@ describe("the protected library", () => {
     expect(screen.getByTestId("where")).toHaveTextContent("/sign-in?next=%2Flibrary%3Fview%3Dall");
   });
 
-  it("shows today's questions from GET /usage when signed in", async () => {
+  it("opens for a signed-in user, with today's questions from GET /usage", async () => {
     setToken("valid");
-    mockFetch({ status: 200, body: { questions_used_today: 8, questions_per_day: 20, resets_at: "2026-11-18T00:00:00Z" } });
+    mockApi(libraryRoutes());
 
     renderApp("/library");
 
-    expect(await screen.findByText(/questions left today/)).toHaveTextContent("12 of 20 questions left today");
+    expect(await screen.findByRole("heading", { name: "Library" })).toBeInTheDocument();
+    expect(await screen.findByText(/questions left today/)).toHaveTextContent("12 of 20 questions left today.");
     expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
   });
 
   it("returns to sign in when the token has expired", async () => {
     setToken("expired");
-    mockFetch({ status: 401, body: { error: { code: "not_authenticated", message: "Could not validate credentials" } } });
+    const expired = { status: 401, body: { error: { code: "not_authenticated", message: "Could not validate credentials" } } };
+    mockApi({ "GET /documents": expired, "GET /limits": expired, "GET /usage": expired });
 
     renderApp("/library");
 

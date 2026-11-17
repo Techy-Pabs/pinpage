@@ -2,9 +2,9 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { API_URL } from "../api";
-import { errorBody, mockFetch, renderApp } from "../test/helpers";
+import { errorBody, libraryRoutes, mockApi, mockFetch, renderApp } from "../test/helpers";
 
-const USAGE = { questions_used_today: 0, questions_per_day: 20, resets_at: "2026-11-18T00:00:00Z" };
+const SIGNED_IN = { "POST /auth/login": { status: 200, body: { access_token: "tok", token_type: "bearer" } }, ...libraryRoutes() };
 
 async function fillIn(email: string, password: string) {
   const user = userEvent.setup();
@@ -33,12 +33,12 @@ describe("the sign in form", () => {
   });
 
   it("signs in, keeps the token and opens the library", async () => {
-    const fetchMock = mockFetch({ status: 200, body: { access_token: "tok", token_type: "bearer" } }, { status: 200, body: USAGE });
+    const { fetchMock } = mockApi(SIGNED_IN);
     renderApp("/sign-in");
 
     await fillIn("Ada@Example.com ", "correct horse");
 
-    expect(await screen.findByRole("heading", { name: "Your library" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Library" })).toBeInTheDocument();
     expect(sessionStorage.getItem("pinpage.token")).toBe("tok");
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe(`${API_URL}/auth/login`);
@@ -46,7 +46,7 @@ describe("the sign in form", () => {
   });
 
   it("returns to the page in next after signing in", async () => {
-    mockFetch({ status: 200, body: { access_token: "tok", token_type: "bearer" } }, { status: 200, body: USAGE });
+    mockApi(SIGNED_IN);
     renderApp("/sign-in?next=%2Flibrary%3Fview%3Dall");
 
     await fillIn("ada@example.com", "correct horse");
@@ -55,7 +55,7 @@ describe("the sign in form", () => {
   });
 
   it("ignores a next that points outside the app", async () => {
-    mockFetch({ status: 200, body: { access_token: "tok", token_type: "bearer" } }, { status: 200, body: USAGE });
+    mockApi(SIGNED_IN);
     renderApp(`/sign-in?next=${encodeURIComponent("https://evil.example.com/phish")}`);
 
     await fillIn("ada@example.com", "correct horse");
@@ -139,10 +139,10 @@ describe("the sign in form", () => {
 
   it("sends a signed-in visitor straight to the library", async () => {
     sessionStorage.setItem("pinpage.token", "tok");
-    mockFetch({ status: 200, body: USAGE });
+    mockApi(libraryRoutes());
 
     renderApp("/sign-in");
 
-    expect(await screen.findByRole("heading", { name: "Your library" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Library" })).toBeInTheDocument();
   });
 });

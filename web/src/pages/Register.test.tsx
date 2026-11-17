@@ -2,9 +2,7 @@ import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { API_URL } from "../api";
-import { errorBody, mockFetch, renderApp } from "../test/helpers";
-
-const USAGE = { questions_used_today: 0, questions_per_day: 20, resets_at: "2026-11-18T00:00:00Z" };
+import { errorBody, libraryRoutes, mockApi, mockFetch, renderApp } from "../test/helpers";
 
 async function fillIn(email: string, password: string) {
   const user = userEvent.setup();
@@ -38,16 +36,16 @@ describe("the register form", () => {
   });
 
   it("creates the account, signs in and opens the library", async () => {
-    const fetchMock = mockFetch(
-      { status: 201, body: { id: "u1", email: "ada@example.com" } },
-      { status: 200, body: { access_token: "tok", token_type: "bearer" } },
-      { status: 200, body: USAGE },
-    );
+    const { fetchMock } = mockApi({
+      "POST /auth/register": { status: 201, body: { id: "u1", email: "ada@example.com" } },
+      "POST /auth/login": { status: 200, body: { access_token: "tok", token_type: "bearer" } },
+      ...libraryRoutes(),
+    });
     renderApp("/register");
 
     await fillIn("ada@example.com", "long enough");
 
-    expect(await screen.findByRole("heading", { name: "Your library" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Library" })).toBeInTheDocument();
     expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe(`${API_URL}/auth/register`);
     expect(sessionStorage.getItem("pinpage.token")).toBe("tok");
   });
