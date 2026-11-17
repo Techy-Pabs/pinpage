@@ -11,7 +11,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.core.config import Settings, settings
 from app.core.errors import DEFAULT_CODES, ApiError, error_body
 from app.db.session import SessionLocal
-from app.routers import auth, conversations, documents, usage
+from app.routers import auth, conversations, documents, limits, usage
 from app.services.processing import mark_stuck_documents
 
 # Show INFO logs from our own modules
@@ -106,6 +106,7 @@ app.include_router(auth.router)
 app.include_router(documents.router)
 app.include_router(conversations.router)
 app.include_router(usage.router)
+app.include_router(limits.router)
 
 
 # Visiting the base URL opens the Swagger page. Hidden from the docs themselves.

@@ -29,6 +29,9 @@ from app.models.document import (
     FAILURE_MESSAGES,
     RETRYABLE_CODES,
     STATUS_FAILED,
+    STAGE_EMBEDDING,
+    STAGE_EXTRACTING,
+    STAGE_FINDING_SECTIONS,
     STATUS_PROCESSING,
     STATUS_READY,
 )
@@ -125,15 +128,29 @@ def _lock_if_processing(db: Session, document_id: uuid.UUID) -> Document | None:
     )
 
 
+def _set_stage(session_factory: sessionmaker, document_id: uuid.UUID, stage: str) -> bool:
+    """Records the stage a processing document has moved to. False if it was
+    deleted (or finished) meanwhile."""
+    with session_factory() as db, db.begin():
+        document = _lock_if_processing(db, document_id)
+        if document is None:
+            return False
+        document.stage = stage
+    return True
+
+
 def _save_prepared(session_factory: sessionmaker, document_id: uuid.UUID, prepared: Prepared) -> bool:
     """Stages 1 and 2: pages, sections and chunks, saved together or not at
-    all. False if the document was deleted meanwhile."""
+    all, with the move to the embedding stage. False if the document was
+    deleted meanwhile."""
     with session_factory() as db, db.begin():
-        if _lock_if_processing(db, document_id) is None:
+        document = _lock_if_processing(db, document_id)
+        if document is None:
             logger.info("Document %s was deleted during processing; result dropped", document_id)
             return False
         _delete_prepared(db, document_id)
         _add_prepared(db, document_id, prepared)
+        document.stage = STAGE_EMBEDDING
     logger.info(
         "Document %s: %d pages, %d sections, %d chunks",
         document_id, len(prepared.texts), len(prepared.sections), len(prepared.chunks),
@@ -198,6 +215,7 @@ def _finish_ready(session_factory: sessionmaker, document_id: uuid.UUID) -> None
         if document is None:
             return
         document.status = STATUS_READY
+        document.stage = None
         document.page_count = db.scalar(
             select(func.count()).select_from(DocumentPage).where(DocumentPage.document_id == document_id)
         )
@@ -218,6 +236,7 @@ def _finish_failed(session_factory: sessionmaker, document_id: uuid.UUID, code: 
             # resumes from the first unfinished stage.
             _delete_prepared(db, document_id)
         document.status = STATUS_FAILED
+        document.stage = None
         document.page_count = None
         document.error_code = code
         document.error_message = failure_message(code)
@@ -263,8 +282,13 @@ def process_document(
             except ProcessingFailed as failure:
                 _finish_failed(session_factory, document_id, failure.code)
                 return
+            if not _set_stage(session_factory, document_id, STAGE_FINDING_SECTIONS):
+                return
+            # Saved with the move to the embedding stage
             if not _save_prepared(session_factory, document_id, prepare(extracted, title)):
                 return
+        elif not _set_stage(session_factory, document_id, STAGE_EMBEDDING):
+            return  # deleted meanwhile
 
         # Stage 3
         try:
@@ -306,6 +330,7 @@ def restart_processing(db: Session, document: Document) -> None:
     if document.embedded_with_fake_ai:
         forget_fake_embeddings(db, document)
     document.status = STATUS_PROCESSING
+    document.stage = STAGE_EXTRACTING  # moves on at once past the stages already done
     document.error_code = None
     document.error_message = None
     document.processed_at = None
@@ -326,6 +351,7 @@ def mark_stuck_documents(session_factory: sessionmaker, timeout_minutes: int) ->
             .where(Document.status == STATUS_PROCESSING, Document.updated_at < cutoff)
             .values(
                 status=STATUS_FAILED,
+                stage=None,
                 page_count=None,
                 error_code="interrupted",
                 error_message=failure_message("interrupted"),

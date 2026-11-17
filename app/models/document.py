@@ -24,6 +24,19 @@ STATUS_PROCESSING = "processing"
 STATUS_READY = "ready"
 STATUS_FAILED = "failed"
 
+# What a processing document is doing now (documents.stage), for the
+# library to show. Only processing documents have one.
+STAGE_EXTRACTING = "extracting"  # reading the PDF's pages
+STAGE_FINDING_SECTIONS = "finding_sections"  # finding its sections and chunks
+STAGE_EMBEDDING = "embedding"  # preparing the chunks for questions
+STAGES = (STAGE_EXTRACTING, STAGE_FINDING_SECTIONS, STAGE_EMBEDDING)
+
+
+def _initial_stage(context) -> str | None:
+    """A document inserted as processing starts at the first stage."""
+    return STAGE_EXTRACTING if context.get_current_parameters().get("status") == STATUS_PROCESSING else None
+
+
 # Why a document failed: a short fixed code, and the sentence shown to the
 # user. Never exception text.
 FAILURE_MESSAGES = {
@@ -57,6 +70,11 @@ class Document(Base):
         CheckConstraint("size_bytes > 0", name="size_positive"),
         CheckConstraint("page_count IS NULL OR page_count > 0", name="page_count_positive"),
         CheckConstraint("sha256 ~ '^[0-9a-f]{64}$'", name="sha256_hex"),
+        # A stage only while processing, and only a known one
+        CheckConstraint(
+            "stage IS NULL OR (status = 'processing' AND stage IN ('extracting', 'finding_sections', 'embedding'))",
+            name="stage_valid",
+        ),
         # The same file only once per workspace, whatever its status
         UniqueConstraint("workspace_id", "sha256"),
         # The library lists a workspace's documents newest first
@@ -83,6 +101,9 @@ class Document(Base):
     sha256: Mapped[str] = mapped_column(String(64))
     page_count: Mapped[int | None] = mapped_column(Integer)  # empty until processing finishes
     status: Mapped[str] = mapped_column(String(20))
+    # While processing: the stage it is in (STAGES), set in the same
+    # transaction as the work that starts it. Empty otherwise
+    stage: Mapped[str | None] = mapped_column(String(20), default=_initial_stage)
     error_code: Mapped[str | None] = mapped_column(String(50))
     error_message: Mapped[str | None] = mapped_column(String(500))
     created_at: Mapped[datetime] = mapped_column(

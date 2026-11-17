@@ -25,7 +25,7 @@ from tests.pdfs import make_pdf
 
 MB = 1024 * 1024
 RESPONSE_FIELDS = {
-    "id", "title", "original_filename", "size_bytes", "page_count", "status",
+    "id", "title", "original_filename", "size_bytes", "page_count", "status", "stage",
     "error_code", "error_message", "created_at", "processed_at",
 }
 
@@ -271,7 +271,7 @@ def test_same_file_twice_in_one_workspace_is_refused_with_the_existing_document(
 def test_a_failed_document_still_blocks_the_same_file(db, upload, auth_headers):
     headers = auth_headers()
     first = upload(headers).json()
-    db.execute(update(Document).values(status=STATUS_FAILED))
+    db.execute(update(Document).values(status=STATUS_FAILED, stage=None))
     db.commit()
 
     response = upload(headers)
@@ -331,7 +331,7 @@ def test_eleventh_document_is_refused_and_failed_documents_do_not_count(db, uplo
     db.execute(
         update(Document)
         .where(Document.id == db.scalars(select(Document.id).limit(1)).one())
-        .values(status=STATUS_FAILED)
+        .values(status=STATUS_FAILED, stage=None)
     )
     db.commit()
 

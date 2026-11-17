@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -15,6 +16,8 @@ class DocumentResponse(BaseModel):
     size_bytes: int
     page_count: int | None
     status: str
+    # What a processing document is doing now; null in any other status
+    stage: Literal["extracting", "finding_sections", "embedding"] | None
     error_code: str | None
     error_message: str | None
     created_at: datetime

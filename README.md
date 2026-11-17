@@ -79,7 +79,7 @@ Every document endpoint needs a login (`Authorization: Bearer <token>`). Swagger
 | GET /auth/me | The logged in user | 200 | 401 |
 | POST /documents | Uploads a PDF (multipart form: `file`, optional `title`) | 202, status `processing` | 400 `not_pdf`, 403 `document_limit_reached`, 409 `duplicate_document`, 413 `file_too_large`, 502 `storage_error` |
 | GET /documents | Your documents, newest first | 200 | 401 |
-| GET /documents/{id} | One document and its status | 200 | 404 `document_not_found` |
+| GET /documents/{id} | One document and its status. While `processing`, `stage` says what it is doing: `extracting`, `finding_sections` or `embedding` (null in any other status) | 200 | 404 `document_not_found` |
 | GET /documents/{id}/pages/{page_number} | The text of one page (pages start at 1) | 200 | 404 `document_not_found` or `page_not_found`, 409 `document_not_ready` |
 | GET /documents/{id}/sections | The detected sections in order, with their pages and `kind` (`body` or `front_matter`) | 200 | 404, 409 `document_not_ready` |
 | POST /documents/{id}/retry | Restarts processing after `interrupted` or `ai_unavailable`, from the first unfinished stage. Also redoes all the embeddings of a ready document embedded by the local fake AI, once the real AI is in use | 202, status `processing` | 404, 409 `retry_not_allowed`, 403 `document_limit_reached` |
@@ -91,6 +91,7 @@ Every document endpoint needs a login (`Authorization: Bearer <token>`). Swagger
 | DELETE /conversations/{id} | Deletes a conversation and its messages | 204 | 404 |
 | DELETE /documents/{id} | Deletes the file, the document and its pages, in any status | 204 | 404, 502 `storage_error` (the document is kept, so you can retry) |
 | GET /usage | Your questions today: `questions_used_today`, `questions_per_day` and `resets_at` (the next midnight UTC) | 200 | 401 |
+| GET /limits | This server's limits, from its settings: `max_upload_mb`, `max_pages`, `max_documents_per_workspace`, `questions_per_day`. For the frontend's checks; the server still checks everything | 200 | 401 |
 | GET /health | Health check | 200 | |
 
 Every error uses one shape: `{"error": {"code": "...", "message": "..."}}`. A `duplicate_document` error also carries `existing_document` with that document's `id` and `status`.

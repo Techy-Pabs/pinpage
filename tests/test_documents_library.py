@@ -14,7 +14,7 @@ from app.services.processing import process_document
 from tests.pdfs import LONG_TEXT, text_pdf
 
 RESPONSE_FIELDS = {
-    "id", "title", "original_filename", "size_bytes", "page_count", "status",
+    "id", "title", "original_filename", "size_bytes", "page_count", "status", "stage",
     "error_code", "error_message", "created_at", "processed_at",
 }
 NOT_FOUND = {"error": {"code": "document_not_found", "message": "Document not found."}}

@@ -10,7 +10,7 @@ from app.core.config import settings
 from app.core.errors import ApiError
 from app.dependencies import get_ai, get_current_user, get_db, get_session_factory, get_storage
 from app.models import Document, DocumentSection, User, Workspace
-from app.models.document import RETRYABLE_CODES, STATUS_FAILED, STATUS_PROCESSING, STATUS_READY
+from app.models.document import RETRYABLE_CODES, STAGE_EXTRACTING, STATUS_FAILED, STATUS_PROCESSING, STATUS_READY
 from app.schemas.document import DocumentResponse, FileLinkResponse, PageResponse, SectionResponse
 from app.services import documents as docs
 from app.services.ai import AIClient
@@ -208,6 +208,7 @@ def upload_document(
         size_bytes=len(upload.data),
         sha256=sha256,
         status=STATUS_PROCESSING,
+        stage=STAGE_EXTRACTING,
     )
     try:
         db.add(document)

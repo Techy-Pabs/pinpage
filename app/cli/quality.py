@@ -46,7 +46,7 @@ from app.cli.users import database_label
 from app.core.config import settings
 from app.core.security import hash_password
 from app.models import Document, User
-from app.models.document import RETRYABLE_CODES, STATUS_FAILED, STATUS_PROCESSING, STATUS_READY
+from app.models.document import RETRYABLE_CODES, STAGE_EXTRACTING, STATUS_FAILED, STATUS_PROCESSING, STATUS_READY
 from app.services import documents as docs
 from app.services import modes
 from app.services.ai import AIClient, AIServiceError, ChatMessage, ChatReply, DailyLimitReached, EmbeddingMode
@@ -174,7 +174,7 @@ def ready_document(
             db.add(Document(
                 id=document_id, workspace_id=workspace.id, uploaded_by=user_id, title=qdoc.title,
                 original_filename=Path(qdoc.file).name, storage_key=key, size_bytes=len(data),
-                sha256=docs.sha256_hex(data), status=STATUS_PROCESSING,
+                sha256=docs.sha256_hex(data), status=STATUS_PROCESSING, stage=STAGE_EXTRACTING,
             ))
             db.flush()
             storage.save(key, data, "application/pdf")

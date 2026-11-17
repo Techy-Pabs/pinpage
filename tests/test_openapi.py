@@ -21,6 +21,7 @@ EXPECTED = {
     ("delete", "/conversations/{conversation_id}"),
     ("post", "/conversations/{conversation_id}/messages"),
     ("get", "/usage"),
+    ("get", "/limits"),
 }
 
 
