@@ -128,7 +128,7 @@ All set in `.env`, so they change without code changes:
 | `ANSWER_TIME_LIMIT_SECONDS` | 90 | Longest time one answer may take, across all its AI requests (rewrite, embedding, every attempt, every summary part). Each request's timeout shrinks to the time left; past it, 503 `ai_unavailable` with nothing saved or counted |
 | `MAX_PAGES_PER_QUESTION` | 3 | Pages read for one page question; more are cut, with a note in the answer |
 | `SUMMARY_PART_CHARS` | 12000 | Characters per summary part; a longer section is summarised in parts, then combined |
-| `AI_MAX_TOKENS_QUESTION`, `AI_MAX_TOKENS_PAGE`, `AI_MAX_TOKENS_SUMMARY` | 2500, 4000, 5000 | Output tokens for an answer, a page answer and each summary request. The model's reasoning counts too. A reply cut off by its limit is not retried: it is trimmed after its last valid marker, or, with nothing cited, gives 503 `ai_unavailable` (nothing saved or counted) |
+| `AI_MAX_TOKENS_QUESTION`, `AI_MAX_TOKENS_PAGE`, `AI_MAX_TOKENS_SUMMARY` | 2000, 2500, 3000 | Output tokens for an answer, a page answer and each summary request, set from the Milestone 4 quality runs (`quality/RESULTS.md`). The model's reasoning counts too. A reply cut off by its limit is not retried: it is trimmed after its last valid marker, or, with nothing cited, gives 503 `ai_unavailable` (nothing saved or counted) |
 | `REWRITE_FOLLOW_UPS` | true | Rewrite short follow up questions before retrieval; false turns it off |
 | `SUMMARY_MAX_PARTS` | 4 | Parts one summary may use (so at most 5 requests); above that, Pinpage suggests the subsections instead. A summary counts as one question |
 

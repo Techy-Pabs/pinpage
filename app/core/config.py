@@ -95,11 +95,13 @@ class Settings(BaseSettings):
     # the reasoning counts against the limit, so a long answer needs room for
     # both. A reply cut off by the limit is trimmed after its last valid
     # marker. AI_MAX_TOKENS covers everything else (follow up rewrites).
+    # Set from the Milestone 4 quality runs (see quality/RESULTS.md): each is
+    # at least 2.5 times the largest reply measured and at least 1000.
     ai_max_tokens: int = Field(default=1000, gt=0)
-    ai_max_tokens_question: int = Field(default=2500, gt=0)
-    ai_max_tokens_page: int = Field(default=4000, gt=0)
+    ai_max_tokens_question: int = Field(default=2000, gt=0)
+    ai_max_tokens_page: int = Field(default=2500, gt=0)
     # Each summary part and the request combining them
-    ai_max_tokens_summary: int = Field(default=5000, gt=0)
+    ai_max_tokens_summary: int = Field(default=3000, gt=0)
     # Texts per embedding request; each request counts once against the
     # free daily allowance
     embedding_batch_size: int = Field(default=64, gt=0, le=256)
